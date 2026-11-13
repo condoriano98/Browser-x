@@ -1,545 +1,581 @@
-# Browser-x — Implementation Plan
+# Browser-x: Implementation Plan (Chromium fork, structured like midori-desktop)
 
-Status: **Draft for review**. No code has been written. Nothing has been built, packaged, installed or deployed.
-Target platform: **Windows** (x64 first).
+Status: **draft for review, revision 2**. No code has been written. Nothing has been built, packaged, installed or deployed.
+Target platform: **Windows x64** first. Windows ARM64, Linux and macOS come later, as in the reference.
 Date: 2026-11-13
+
+> **Revision 2 change:** The requester asked to model Browser-x on
+> [`goastian/midori-desktop`](https://github.com/goastian/midori-desktop) but to use **Chromium** as the engine. midori-desktop is a full
+> fork of Firefox. The Chromium equivalent is a **full Chromium fork** (Option A in revision 1), not CEF. This revision replaces the
+> CEF recommendation. §3 explains the trade-off and what it costs.
 
 ---
 
 ## 1. Executive summary
 
-Browser-x is meant to be a lightweight desktop browser, inspired by Midori's minimal UX, running on Chromium, for Windows. It will have an IT-approved portable (install-free) mode.
+Browser-x will be a **downstream fork of Chromium**. It follows the same layout and workflow as midori-desktop, which follows Firefox:
 
-**The repository is empty.** There is no existing code, framework, engine, build system, or instruction file to build on (see §2). Every choice below is a new decision, not an extension of existing work.
+| midori-desktop (Gecko) | Browser-x (Chromium) |
+|---|---|
+| Upstream Firefox source downloaded into `engine/` (not committed) | Upstream Chromium fetched at a pinned tag into `chromium/src/` (not committed) via `depot_tools` |
+| `amelia.json` holds the product name, vendor, appId, Firefox version, brands, add-ons and update host | `browserx.json` holds the product name, vendor, appId, Chromium version, brands, update host and bundled components |
+| Amelia CLI (`download`, `import`, `brand`, `build`, `package`, `update`) | `bx` CLI (Python, in `tools/bx/`) with the same verbs, wrapping `gclient`, `gn` and `autoninja` |
+| `src/` overlay of new and changed Firefox files | `src/` overlay of new files, plus `patches/` as an ordered series of `.patch` files for upstream edits |
+| `configs/branding/{release,dawn}` | `configs/branding/{stable,beta}` (icons, `BRANDING`, product strings) |
+| `configs/{common,windows,…}/mozconfig` | `configs/{common,windows,…}/args.gn` |
+| `src/midori/workspace/` (custom features) | `src/browserx/` (custom features, e.g. privacy panel, portable mode) |
+| `midori-newtab` add-on, built-in protection extension | Built-in WebUI new-tab page, built-in content blocking |
+| `build/AppDir/distribution/policies.json` | Chromium enterprise policies (registry/ADMX) + `initial_preferences` |
+| `build/winsign/sign.ps1` + MAR updates | `packaging/windows/sign.ps1` + mini_installer/MSI + signed update manifest |
+| `.github/workflows/{build-windows,patches,update-firefox,release}.yml` | Same set, with `update-chromium.yml` |
 
-**Recommended architecture: Option B: a native Windows shell embedding CEF (Chromium Embedded Framework)**, built with CMake/MSVC in C++. The shell uses CEF's Views framework for the window, tab strip and toolbar. Internal pages such as the new-tab page, settings, history, downloads and the privacy panel are bundled `browserx://` pages, with a small IPC surface that only accepts allowlisted messages.
+**What the fork gives us for free**, compared with CEF:
 
-Why CEF and not a full fork:
+- the full Chrome browser UI: tabs, omnibox, bookmarks, history, downloads, incognito, settings and site permissions
+- the complete Chromium **enterprise policy stack** with ADMX templates
+- **Chrome extensions**
+- the profile system
+- Chromium's own sandbox and download protections
 
-- A Chromium fork (Option A) gives the full browser feature set: the full Chrome enterprise policy set, extensions and Safe Browsing integration. It also costs a lot. You need a checkout of more than 100 GB and multi-hour builds on large machines, and you have to rebase patches every 4 weeks. Teams that do this (Brave, Vivaldi, Edge) have dedicated staff for it. That is out of proportion for a "lightweight" MVP built from an empty repo.
-- CEF ships prebuilt, versioned binaries that follow Chromium stable. Building against them takes minutes, not hours. It still uses Chromium's multi-process sandbox, Blink and V8, so website compatibility is the same as Chrome's.
-- **CEF is not a full browser.** It does not provide Safe Browsing, sync, a full enterprise policy stack, a content blocker, an extensions UI, or an updater. Browser-x must build or deliberately leave out each of these. §7 lists the gaps.
+The MVP is mostly about **removing, rebranding and configuring**, plus a small set of new features. It is not about building a browser UI from scratch.
 
-Option C (an existing Chromium shell in the repo) does not apply, because none exists.
+**What it costs:**
 
-There is also a Windows-specific alternative worth a product decision: **WebView2** (§3.5). With the Evergreen runtime, Microsoft owns Chromium patching. That is very attractive for a small team, but it complicates truly install-free portable mode. See decision D1 in §10.
+- The checkout is about 100 GB, and full builds take hours on large machines. We need **self-hosted Windows build machines**, because GitHub-hosted runners are too small.
+- The patch series must be **rebased on every Chromium stable security release (about weekly) and milestone (every 4 weeks)**. This is the dominant ongoing cost. The plan keeps patches small and well named to contain it.
+
+**Identity:** "Like midori-desktop" means the same **structure, workflow and feature direction**: lightweight, privacy-oriented, custom new tab. It does **not** mean using the Midori name, logo, artwork or branding, which belong to Astian. Browser-x ships its own branding. No code is copied from midori-desktop. Its sources are MPL-2.0 Gecko code and do not apply to Chromium anyway.
 
 ---
 
 ## 2. Repository findings
 
-Inspection was done on branch `ccr-fcd9c72e-7xe7r1` against `origin` `https://github.com/condoriano98/Browser-x`.
+### 2.1 This repository (`condoriano98/Browser-x`)
 
 | Area | Finding |
 |---|---|
-| Commits / history | **None.** `git log` reports "your current branch does not have any commits yet". `git ls-remote origin` returns no refs. |
-| Files | **None** except `.git/`. This document is the first file. |
-| `AGENTS.md`, `CLAUDE.md`, `README`, `CONTRIBUTING` | Not present. No repository instructions exist. |
-| App framework | None. |
-| Target OS | Not declared in the repo. The requester specified **Windows**. |
-| Build system | None (no CMake, GN, MSBuild, package.json, Cargo, etc.). |
-| Packaging | None (no WiX/MSIX/NSIS/zip scripts). |
-| UI conventions | None. |
-| Browser engine (Chromium / CEF / Electron / WebView2) | **None present.** |
-| Settings / profile storage | None. |
-| Update mechanism | None. |
-| Code signing | None (no certs, signing scripts, or CI secrets referenced). |
-| Policy handling (ADMX, registry, JSON policy) | None. |
-| Tests / CI | None (no `.github/workflows`, no test dirs). |
-| License | **No `LICENSE` file.** This must be decided before third-party code is vendored (§7.6). |
+| Content | Empty before this plan. The only file is `docs/browser-implementation-plan.md`. There are no commits besides it. |
+| `AGENTS.md`, README, CONTRIBUTING, LICENSE | Not present |
+| Framework, engine, build system, packaging, CI, tests, policy, signing, updater | None |
+| Target OS | Windows (requester) |
 
-### Constraints that affect engine and packaging choices
+There is nothing to preserve or migrate. Phase 0 creates the repo skeleton described in §5.
 
-1. **No team conventions to follow.** The first phase has to set them: language, build, layout, CI, code style, contribution rules (AGENTS.md).
-2. **Windows-only target.** This removes cross-platform UI concerns. It also makes Authenticode signing, AppLocker/WDAC compatibility, ADMX policy templates, DPAPI-bound profile encryption and Mark-of-the-Web handling first-class requirements.
-3. **No existing CI or build infrastructure.** A full Chromium fork would need large Windows build machines (32+ cores, 64 GB+ RAM, ~250 GB disk) that do not exist yet. CEF's prebuilt binaries avoid this.
-4. **No signing identity exists.** The organization needs a code-signing certificate (OV/EV, or a managed service such as Azure Trusted Signing) before any build can be distributed, portable or installed.
-5. **Name and branding.** "Inspired by Midori" should mean minimal UX only. Do not reuse Midori's name, logo or assets.
+### 2.2 Reference repository (`goastian/midori-desktop`, inspected at commit `6c78156`)
+
+| Path | What it is | How we mirror it |
+|---|---|---|
+| `amelia.json` | Product manifest: name, vendor, `appId`, `binaryName`, pinned upstream version (Firefox 159.0.1), brands (`release`, `dawn`), bundled add-ons, `updateHostname`, license type MPL-2.0 | `browserx.json` with the same fields, using a Chromium version |
+| `package.json` scripts | `download`, `import`, `bootstrap`, `brand`, `build:win-x64`, `package:win-x64`, `update-ff`, `test`, `lint`, `lc` (license check) | `bx` verbs with the same names (§5.3) |
+| `engine/` (gitignored) | Firefox source tree and `obj-*` output | `chromium/src/` and `chromium/src/out/<config>/` |
+| `src/` | Overlay of Firefox dirs (`browser/`, `toolkit/`, `netwerk/`, `security/`, `services/`, …) + `src/midori/workspace/` | `src/` overlay of new files in Chromium paths + `src/browserx/` for product features |
+| `patches/` | One patch to the Amelia tool itself | `patches/` holds the **ordered Chromium patch series** (`series` file), the Chromium-world norm (ungoogled-chromium, Brave) |
+| `configs/branding/release/` | Icons (`.ico`, PNGs 16–1024), installer art, private-browsing icons | `configs/branding/stable/` with Chromium's equivalents (`chrome/app/theme/…`, `BRANDING`, `.ico`, VisualElements) |
+| `configs/{common,windows,linux,macos}/mozconfig` | Build flags per platform, branding dir, source repo/changeset, sccache, optional Safe Browsing key file | `configs/{common,windows}/args.gn` (`is_official_build`, `chrome_pgo_phase`, `enable_reporting=false`, no Google API keys, …) |
+| `build/AppDir/distribution/policies.json` | Policies baked into the Linux AppImage (disable app update) | Default policies/`initial_preferences` per package type |
+| `build/winsign/` | `sign.ps1`, `bootstrap.ps1`, `mar.exe` | `packaging/windows/sign.ps1` + update tooling |
+| `scripts/` | `update_ff.py`, `win-installer.sh`, `verify-build-output.sh`, `license-check.mjs`, `run_tests.py`, sync tests | `tools/bx/` commands + `scripts/` equivalents |
+| `.github/workflows/` | `build-{windows,linux,macos}.yml`, `ci.yml`, `patches.yml`, `update-firefox.yml`, `release.yml`, `l10n.yml` | Same names; Windows first (§6.7) |
+| README "Build from source" | Windows is **cross-compiled from Linux**; native Windows dev not maintained | Browser-x builds **natively on Windows** (Chromium's supported path for non-Google developers; cross-compiling Windows needs a hand-packaged MSVC toolchain) |
+| Features listed | Privacy defaults + built-in protection extension, workspaces, custom new tab, custom branding/update config, WebExtensions, sync | Mapped in §4 |
+
+### 2.3 Constraints that follow
+
+1. **Build infrastructure is the gating item.** Chromium for Windows needs Visual Studio 2022 with the pinned Windows SDK, 32+ cores and 64 GB+ RAM recommended, plus about 250 GB of free SSD per checkout. That rules out GitHub-hosted runners (14 GB disk, 6 h limit), so we need **self-hosted runners**. Distributed builds via Siso/RBE need our own RBE service (e.g. BuildBuddy or EngFlow). Google's is not available to forks.
+2. **No signing identity exists yet.** We need a code-signing cert (OV/EV or Azure Trusted Signing).
+3. **Patch-rebase capacity.** We need at least one engineer who owns weekly rebases (§7.1).
+4. **Branding and trademarks.** We must remove Google/Chrome branding (Chromium's non-branded build already does) and must not use Midori/Astian marks.
+5. **The project license is not yet chosen.** Chromium is BSD-3-Clause. Our patches should use a compatible license. BSD-3 is the simplest, matching upstream.
 
 ---
 
-## 3. Engine options compared
+## 3. Engine decision
 
-### 3.1 Summary table
-
-| Criterion | A. Full Chromium fork | B. CEF + native shell (**recommended**) | C. Existing shell in repo |
+| Criterion | **A. Chromium fork (chosen)** | B. CEF + own shell (rev. 1 recommendation) | C. Existing shell in repo |
 |---|---|---|---|
-| Web standards / site compatibility | Same as Chrome | Same Blink/V8 as Chrome at the matching version. Minor gaps in browser-level features (e.g. some prompts and payment UIs) | N/A, none exists |
-| Extensions | Full Chrome extension system | Partial and version-dependent. Must be verified in a spike. **Excluded from MVP** | N/A |
-| Tab management | Chrome's, customisable via patches | Built by us (one browser view per tab). Full control, more work | N/A |
-| Admin policy | Full Chrome policy stack, ADMX templates | CEF can read Chromium policies from a registry key we name (`chrome_policy_id`, Chrome-runtime only). **Many Chrome UI policies won't apply.** Shell-level policies are ours to implement | N/A |
-| Security patching | We rebuild Chromium for every stable/security release (~weekly), and rebase our patches each milestone | CEF publishes builds within days of each Chrome stable. We bump the version, rebuild the shell (minutes) and re-sign | N/A |
-| Build complexity | Very high: `depot_tools`, ~100 GB+ source, 4–12 h clean builds | Moderate: CMake + MSVC + prebuilt CEF. ~1–2 GB SDK, builds in minutes | N/A |
-| Package size (estimate, to be measured) | 150–250 MB installed | ~250–350 MB unpacked (libcef.dll dominates), ~100–130 MB zipped | N/A |
-| Memory | Chrome-like | Chrome-like per tab. The shell itself adds little. "Lightweight" comes from fewer background services, not a lighter engine | N/A |
-| Windows feasibility | Yes (needs big build farm) | Yes. CEF's primary platform is Windows | N/A |
-| Fit for an empty repo and a small team | Poor | **Good** | Not applicable |
+| Matches the requested "like midori-desktop" model | **Yes**, the same fork-of-upstream model | No, it is an embedding, not a fork | N/A, the repo is empty |
+| Website compatibility | Identical to Chrome | Same engine; some browser-level features missing | N/A |
+| Tabs, bookmarks, history, downloads, incognito, settings, permission UI | **Inherited** | Must be built | N/A |
+| Extensions | **Full Chrome extension system** | Partial | N/A |
+| Enterprise policy | **Full Chromium policy set + ADMX generator** | Subset via `chrome_policy_id` | N/A |
+| Security patching | **We rebase and rebuild each stable release (weekly)**, which is heavy | Bump the CEF version, which is light | N/A |
+| Build cost | Very high (about 100 GB source, hours per build, self-hosted farm) | Low | N/A |
+| Package size | About 120–150 MB installer, similar to Chromium | Similar | N/A |
+| Memory | Chromium-like. "Lightweight" comes from disabling background services and features, not from a lighter engine | Similar | N/A |
 
-### 3.2 Option A: full Chromium fork
-
-- **Pros:** The most complete browser. All Chrome enterprise policies and ADMX templates come with it, along with extensions, Safe Browsing (with an API agreement), the profile system, password manager and download protection.
-- **Cons:** Large ongoing staffing cost. Chromium cuts a new milestone every 4 weeks and security releases roughly weekly. Every downstream patch must be rebased, and a missed security release is a real exposure. It needs dedicated build infrastructure. The feature set is "lightweight" only in the UI.
-- **When to choose it instead:** If product input (§10) decides that full Chrome-policy parity or extension support is a launch requirement. If so, consider starting from an existing de-Googled fork (e.g. ungoogled-chromium patches) rather than from scratch, and plan for at least one engineer working on rebases full-time.
-
-### 3.3 Option B: CEF in a native shell (recommended)
-
-- **Pros:** Real Chromium with the full multi-process sandbox, small build, fast security updates (bump the CEF version), and full control of the UI to get a Midori-like minimal design.
-- **Cons and gaps we must own:** Safe Browsing, a content-blocking engine, the history/bookmarks/downloads UIs, permission prompts, the update system, the policy layer for shell features, and crash-report plumbing. Proprietary codecs (H.264/AAC) and Widevine are **not** in standard CEF builds. Adding them needs a custom CEF build plus licensing.
-- **Do not assume** CEF provides Chrome's policy set, extension system or settings UI. Phase 0 includes a spike to measure exactly which Chromium policies take effect through `chrome_policy_id` on the chosen CEF branch.
-
-### 3.4 Option C: existing Chromium shell
-
-Not applicable. The repository contains no shell, engine or app.
-
-### 3.5 Sidebar: WebView2 (decision D1)
-
-WebView2 is Chromium-based and built into Windows 10/11 through the **Evergreen runtime**, which Microsoft patches.
-
-- **Pros:** The smallest package (a few MB). Microsoft owns engine security updates. Organizations already manage it, and it has its own Edge-WebView2 policies.
-- **Cons:** Truly portable use requires either the system Evergreen runtime (usually present, but IT-controlled) or a bundled **Fixed Version** runtime, which puts patching back on us. Browser-level features are no richer than CEF's.
-- **Recommendation:** Keep CEF as the default plan. Decide D1 before Phase 1 starts, because if the organization accepts "portable = requires the system WebView2 runtime", WebView2 removes most of the security-patch burden.
+**Decision: Option A.** It is what the requester asked for. It also gives the strongest result on standards, extensions and enterprise policy, which matter for an IT-approved browser. The cost is accepted on the condition that §7.1 (patch ownership) and §2.3 #1 (build farm) are funded. If they cannot be funded, fall back to CEF (revision 1) rather than shipping an unpatched fork. That fallback is decision D1.
 
 ---
 
 ## 4. Product scope
 
-### 4.1 MVP features (first release)
+### 4.1 MVP (first release)
 
-| Feature | Notes |
-|---|---|
-| Tabs and navigation | New/close/reorder tabs, back/forward/reload/stop, tab restore (last closed), keyboard shortcuts (Ctrl+T/W/L/Tab, etc.). |
-| Address/search bar | URL vs. query detection, a configurable search engine (no bundled commercial search deal), history/bookmark suggestions held **locally only**, no remote suggest by default. |
-| Bookmarks | Add/edit/delete, folders, bookmarks bar, HTML import/export. |
-| History | Local history, search, delete range/all, honors retention policy. |
-| Downloads | List, open folder, cancel/retry, "ask where to save" setting, Mark-of-the-Web applied (§7.3). |
-| Private windows | Separate in-memory `CefRequestContext`, no disk persistence, clear visual distinction. Can be disabled by policy. |
-| New-tab page | Local static page: search box, top sites from local history, bookmarks. No remote content or ads. |
-| Configurable privacy protections | Third-party cookie blocking (on by default), tracker blocking via filter lists (on by default, list licenses reviewed), HTTPS-Upgrade / HTTPS-Only mode, Global Privacy Control header, clear-data-on-exit option. |
-| Site permission controls | Prompts for camera, mic, location, notifications, clipboard, pop-ups and downloads. Per-site settings page. One-click revoke. Defaults set by policy. |
-| Privacy/status panel | Toolbar button per tab: connection security (TLS/cert info), blocked trackers count and list, active permissions, cookie counts, and whether the tab is private, plus a "managed by your organization" indicator when policy is applied. |
-| No browsing telemetry | Nothing is sent home by default. No usage stats, no URL reporting, no remote experiments. See §7.5. |
-| `browserx://version` | Shows the version, CEF/Chromium version, git commit, build ID, signing info, portable/installed mode, and applied policies (for IT verification). |
+Most MVP items are **inherited from Chromium and configured**. The "Work" column shows what we actually do.
 
-### 4.2 Explicit exclusions (later decisions)
+| Feature | Source | Work |
+|---|---|---|
+| Tabs, navigation | Inherited | Theme and branding only; optionally a compact "lightweight" toolbar layout patch |
+| Address/search bar | Inherited omnibox | Set default search engines in `prepopulated_engines` (no paid deals, decision D2). Turn remote suggestions **off by default** |
+| Bookmarks, history, downloads | Inherited | None beyond branding |
+| Private windows | Inherited (Incognito) | Rename in strings ("Private window"). Policy `IncognitoModeAvailability` already exists |
+| New-tab page | **New**: `src/browserx/webui/new_tab/` (WebUI) | Local-only NTP: search box, local top sites, bookmarks; no remote content. Replaces Chromium's NTP the way `midori-newtab` replaces Firefox's |
+| Configurable privacy protections | Mix | Third-party cookie blocking **on** (pref default patch), HTTPS-First/Upgrades **on**, Global Privacy Control header (patch), **built-in tracker blocking** (§4.3) |
+| Site permission controls | Inherited | Defaults tightened via `initial_preferences`/policy (notifications ask→block-by-default option) |
+| Privacy/status panel | **New** toolbar button + bubble, `src/browserx/privacy_panel/` | Per tab: connection/cert, blocked requests count/list, active permissions, cookies, "managed by your organization" |
+| No browsing telemetry | Patch series | Remove or disable UMA/metrics reporting, field trials/variations fetch, Google API keys, translate/spelling/autofill/sync services, Safe Browsing extended reporting, NTP promos, "phone home" endpoints (§7.5) |
+| `browserx://version` | Inherited `chrome://version` | Add the Browser-x version, git commit, Chromium version, build ID, portable/installed mode |
 
-| Excluded | Why / cost if added |
-|---|---|
-| Workspaces | UI and state complexity. Revisit after MVP feedback. |
-| Extensions | CEF support is partial and version-dependent, the security review cost is high, and an admin allowlist pipeline is needed. Only the **policy hook** for "approved extensions" is designed in now (§6.6) so it can be added later. |
-| Sync | Requires a server, account system, E2E encryption and a privacy review. |
-| VPN | Out of scope for a browser MVP, and conflicts with corporate network controls. |
-| Bundled search services / search partnerships | A business and privacy decision (§10). |
-| Safe Browsing | Not in CEF. Needs an API agreement (Google Safe Browsing or Microsoft) and implementation. **Strongly recommended for v1.1.** See risk R3. |
-| Password manager, autofill | Credential-storage security review needed. MVP relies on OS/enterprise password managers. |
-| Proprietary codecs, DRM (Widevine) | Licensing and custom CEF builds. |
-| macOS/Linux, ARM64 | Windows x64 first. ARM64 is a cheap follow-up because CEF ships it. |
+### 4.2 Features of the reference repo, and when they arrive
+
+| midori-desktop feature | Browser-x decision | Cost |
+|---|---|---|
+| Built-in protection extension | **MVP** as built-in tracker blocking (§4.3) | Medium: native engine + list pipeline |
+| Custom new tab | **MVP** (WebUI) | Low–medium |
+| Custom branding + update config | **MVP** | Low (branding), medium (updates, §6.4) |
+| WebExtensions compatibility | **Available in MVP but admin-controlled.** Chromium's extension system is inherited, so the engineering cost is about zero. The cost is **policy and security**: default to `ExtensionInstallBlocklist=*` + an IT `ExtensionInstallAllowlist` in managed deployments. Chrome Web Store access for a non-Google browser is decision D12 | Low engineering, needs a product decision |
+| Workspaces (`src/midori/workspace/`) | **Later.** Chromium has tab groups (inherited) as an interim | High: profile/session model changes |
+| Sync | **Later.** Chromium sync uses Google servers, which must be disabled | High: server + E2E encryption |
+| Linux/macOS builds | **Later.** Windows x64 first, then Windows ARM64 | Each platform adds a build farm and signing |
+| Localization (Crowdin, `l10n.yml`) | Inherited Chromium locales. Only our new strings need translation; add Crowdin later | Low |
+
+### 4.3 Built-in tracker blocking (replacing Midori's protection extension)
+
+- **Option 1 (recommended):** a native filter engine in the network stack, as in Brave. For example, embed `adblock-rust` (MPL-2.0, file-level copyleft, compatible with distribution alongside BSD code; needs legal review, decision D8). Lists: EasyList/EasyPrivacy (GPLv3 / CC BY-SA, needs legal review) or a self-curated list. Lists update through a signed component, with the source configurable by policy.
+- **Option 2:** a bundled component extension using `declarativeNetRequest`. Easier to maintain across rebases, but capped by the rule limits of Manifest V3.
+- Either way: per-site toggle in the privacy panel, on/off/strict modes, and policy `TrackerBlockingMode`.
+
+### 4.4 Explicit exclusions
+
+Workspaces, sync, VPN, bundled search deals, password-manager changes, Widevine/DRM (Chromium builds need a licence from Google), proprietary codecs (`proprietary_codecs=true` / `ffmpeg_branding="Chrome"` need patent licensing, decision D9), Google Safe Browsing API (needs an agreement, decision D10), macOS/Linux.
 
 ---
 
-## 5. Architecture
+## 5. Architecture and repository layout
 
-### 5.1 Component diagram
+### 5.1 Repository layout (mirrors midori-desktop)
+
+```
+Browser-x/
+├── AGENTS.md                    agent/contributor rules (rebases, no sandbox weakening, no evasion features)
+├── README.md  CONTRIBUTING.md  SECURITY.md  CODE_OF_CONDUCT.md  LICENSE (BSD-3, D5)
+├── browserx.json                ⇐ amelia.json: name, vendor, appId, binaryName, chromium.version,
+│                                   brands{stable,beta}, components, updateHostname, license
+├── chromium_version.txt         pinned tag, e.g. 1xx.0.xxxx.yy (single source of truth, read by bx)
+├── tools/bx/                    ⇐ amelia: Python CLI (download|import|brand|build|package|run|update|export|test)
+├── configs/
+│   ├── branding/stable/         icons, BRANDING, product_logo_*, VisualElements, installer art
+│   ├── branding/beta/
+│   ├── common/args.gn           shared GN args
+│   ├── windows/args.gn          Windows GN args
+│   └── policies/defaults/       initial_preferences + default managed policy sets per package type
+├── patches/
+│   ├── series                   ordered list; one topic per patch
+│   ├── branding/                product name, policy registry path, user-data-dir name, update URLs
+│   ├── privacy/                 telemetry off, API keys off, cookie/HTTPS defaults, GPC
+│   ├── browserx/                hooks wiring src/browserx into chrome/ (BUILD.gn deps, toolbar button, NTP)
+│   ├── portable/                portable data dir + PortableModeAllowed enforcement
+│   └── policy/                  new policy definitions (PortableModeAllowed, TrackerBlockingMode, …)
+├── src/                         ⇐ midori src/: NEW files copied into chromium/src at import
+│   └── browserx/
+│       ├── privacy_panel/       C++ bubble + model
+│       ├── content_blocking/    filter engine glue + list component
+│       ├── portable/            portable mode detection, marker verification, policy pre-check
+│       └── webui/new_tab/       NTP (TS/HTML/CSS, Chromium WebUI conventions)
+├── packaging/windows/           sign.ps1, MSI (WiX) wrapper over mini_installer, portable zip layout
+├── scripts/                     update_chromium.py, verify-build-output, license-check, sbom, checksums
+├── tests/                       repo-level tests (bx unit tests, patch-apply, policy, portable, network audit)
+├── docs/                        this plan, building-windows.md, policy reference, release process
+├── .github/workflows/           ci, patches, build-windows, update-chromium, release
+└── chromium/                    (gitignored) depot_tools checkout: chromium/src, out/
+```
+
+### 5.2 Working model
 
 ```mermaid
-flowchart TB
-  subgraph Launcher["browserx.exe (signed, sandbox bootstrap)"]
-    Boot[Startup: mode detection<br/>policy load, cmdline hardening]
-  end
-
-  subgraph Browser["Browser process (shell, C++)"]
-    Policy[PolicyService<br/>HKLM/HKCU Policies + admin.json]
-    Paths[DataPathResolver<br/>installed vs portable]
-    Prefs[SettingsStore]
-    UI[UI layer: CEF Views<br/>window, tab strip, toolbar, omnibox]
-    Tabs[TabManager]
-    Nav[Omnibox / search provider]
-    BM[BookmarksStore]
-    Hist[HistoryStore]
-    DL[DownloadManager]
-    Perm[PermissionManager]
-    Priv[PrivacyEngine<br/>filter lists, cookie & HTTPS modes]
-    Panel[Privacy/Status panel model]
-    Upd[UpdateChecker - optional, policy-gated]
-    Crash[Crash reporting - off by default]
-    WebUI[browserx:// scheme handler<br/>NTP, settings, history, downloads, version]
-    DB[(SQLite: bookmarks, history,<br/>permissions, downloads)]
-  end
-
-  subgraph CEF["CEF / Chromium (unmodified binaries)"]
-    RC[CefRequestContext<br/>normal + private]
-    Rend[Renderer processes<br/>sandboxed]
-    GPU[GPU / Network / Utility<br/>processes, sandboxed]
-  end
-
-  Boot --> Policy --> Paths --> Prefs
-  Boot --> UI
-  UI --> Tabs --> RC
-  Tabs --> Nav
-  Priv --> RC
-  Perm --> RC
-  DL --> RC
-  BM & Hist & Perm & DL --> DB
-  WebUI -- allowlisted IPC --> BM & Hist & DL & Prefs & Panel
-  Panel --> Priv & Perm
-  Policy --> Prefs & Perm & Priv & DL & Upd & Crash & Tabs
-  RC --> Rend & GPU
+flowchart LR
+  V[chromium_version.txt] --> D[bx download<br/>gclient sync at tag]
+  D --> I[bx import<br/>copy src/ overlay<br/>apply patches/series]
+  I --> B[bx brand stable|beta<br/>copy configs/branding]
+  B --> G[bx build win-x64<br/>gn gen + autoninja]
+  G --> P[bx package win-x64<br/>mini_installer, MSI, portable zip]
+  P --> S[sign + SHA256SUMS + SBOM + provenance]
+  U[bx update<br/>new Chromium tag] -->|rebase patches| I
+  E[bx export<br/>regen patches from chromium/src edits] --> PS[patches/]
 ```
 
-### 5.2 Proposed repository layout
+- `bx export` turns edits made inside `chromium/src` back into patch files, like `amelia export`.
+- `bx update` bumps `chromium_version.txt`, re-syncs, and re-applies patches. It stops at the first conflicting patch with a report (like `update_ff.py`).
+- **Patch rules:** one topic per patch, smallest diff possible, and new code goes in `src/browserx/` rather than inside upstream files. Upstream files only get thin hooks. This keeps weekly rebases cheap.
 
-```
-/AGENTS.md                  contributor + agent rules (Phase 0)
-/LICENSE                    project license (decision D5)
-/CMakeLists.txt
-/cmake/                     CEF download + checksum verification, toolchain
-/third_party/cef/           (not committed) fetched by version + SHA-256
-/src/app/                   entry point, sandbox bootstrap, process routing
-/src/browser/               TabManager, windows, CEF handlers
-/src/policy/                PolicyService, schema, ADMX generator
-/src/storage/               DataPathResolver, SQLite stores, migrations
-/src/privacy/               filter engine, cookie/HTTPS modes, panel model
-/src/permissions/
-/src/downloads/
-/src/update/
-/src/webui/                 browserx:// pages (HTML/CSS/TS, bundled as resources)
-/policy/                    browserx.admx/.adml, policy schema JSON, docs
-/packaging/msi/             WiX installer
-/packaging/portable/        portable zip layout, launcher marker
-/tests/unit/  /tests/integration/  /tests/e2e/
-/docs/                      this plan, security, policy reference, release process
-/.github/workflows/         build, test, sign, release
-SECURITY.md  THIRD_PARTY_NOTICES (generated)
-```
+### 5.3 `bx` verbs (parity with midori-desktop scripts)
 
-### 5.3 Key design rules
+| midori `npm run …` | `bx …` |
+|---|---|
+| `download` | `bx download` (depot_tools + `gclient sync --with_branch_heads --with_tags` at the pinned tag) |
+| `import` | `bx import` |
+| `brand` | `bx brand stable` |
+| `bootstrap:win` | `bx bootstrap win` (checks VS 2022, SDK, Python, disk/RAM; installs nothing silently) |
+| `build:win-x64` / `build:win-arm64` | `bx build win-x64` / `bx build win-arm64` |
+| `package:win-x64` | `bx package win-x64` |
+| `browser` / `start` | `bx run` (fresh temporary profile) |
+| `update-ff` | `bx update [--to <tag>]` |
+| `export` | `bx export` |
+| `test`, `test:unit` | `bx test` (repo tests + selected Chromium `browser_tests`/`unit_tests` filters) |
+| `lc` | `bx license-check` |
 
-- **Never pass Chromium switches that weaken security.** `OnBeforeCommandLineProcessing` strips a denylist that includes `--no-sandbox`, `--disable-web-security`, `--disable-site-isolation-trials`, `--allow-running-insecure-content`, `--remote-debugging-port`/`--remote-debugging-pipe` (debugging is allowed only if policy permits), and `--disable-features=…` affecting isolation. Unit-tested.
-- **Internal pages are privileged and isolated.** `browserx://` pages are never navigable from web content. They use a per-page message allowlist, and every IPC argument is validated.
-- **One source of truth for paths.** Every write goes through `DataPathResolver`, so portable mode can be audited (§6.2).
-- **Policy wins.** Every setting reads `PolicyService` first. A policy-controlled setting is shown locked with a "Managed by your organization" label.
+### 5.4 Runtime components
+
+The browser runs as Chromium's own process model: browser, sandboxed renderers, GPU, network and utility processes. Browser-x additions live only in the browser process:
+
+- `PortableModeService`: early startup, before the profile is created
+- `PrivacyPanelController`
+- `ContentBlockingService` (network-request hook + list component)
+- the NTP WebUI
+- policy definitions registered with Chromium's existing `PolicyService`
 
 ---
 
-## 6. Packaging and portable deployment
+## 6. Packaging and portable deployment (Windows)
 
-### 6.1 Two distribution forms, same signed binaries
+### 6.1 Distribution forms
 
-| | Installed (MSI) | Portable (zip) |
+| | Installed | Portable |
 |---|---|---|
-| Audience | IT deploys via Intune / ConfigMgr / GPO | IT-approved scenarios: kiosks, restricted machines, test labs, admins' toolkits |
-| Location | `%ProgramFiles%\Browser-x\<version>\` | Any IT-approved folder (e.g. a managed share or `D:\Apps\Browser-x\`) |
-| Profile data | `%LOCALAPPDATA%\Browser-x\User Data\` | `<portable root>\Data\` |
-| Updates | IT-managed (MSI upgrade) or optional updater | Side-by-side folders with rollback (§6.4) |
-| Default-browser / protocol registration | Optional, via installer | **Never.** Portable mode does not touch file associations, the registry run keys, or system settings |
+| Artifact | `BrowserX-<ver>-win-x64.msi` (wraps Chromium's `mini_installer`/`setup.exe`, system-level) | `BrowserX-<ver>-win-x64-portable.zip` |
+| Binaries | Authenticode-signed | **Identical** signed binaries |
+| Location | `%ProgramFiles%\BrowserX\Application\<ver>\` (Chromium layout) | IT-approved folder |
+| User data | `%LOCALAPPDATA%\BrowserX\User Data\` (patched from `Chromium`) | `<root>\Data\User Data\` |
+| Default-browser / protocol registration | Optional via installer | **Never** |
+| Updates | IT-managed MSI (Intune/ConfigMgr/GPO) | Side-by-side with rollback (§6.4) |
 
-Both forms contain **identical, Authenticode-signed binaries**. The only difference is a signed marker file `portable.json` in the portable root. So AppLocker/WDAC publisher rules written for the installed product also cover the portable product, and IT stays in control of whether it may run.
+Because the binaries are identical and signed, AppLocker/WDAC publisher rules cover both forms. IT decides whether either may run.
 
-### 6.2 Portable data directory and retention
+### 6.2 Portable layout and data retention
 
 ```
-Browser-x\                      portable root (IT-approved location)
-  browserx.exe                  launcher (signed)
-  portable.json                 signed marker: {"mode":"portable","data_dir":"Data"}
-  App\
-    1.2.0\  …                   current version (signed binaries)
-    1.1.3\  …                   previous version kept for rollback
-  current.json                  which App\<version> to run (written only by updater)
-  Data\                         ALL user data lives here, visible, not hidden
-    Profile\                    cookies, cache, local storage, SQLite stores
-    Downloads\                  default download folder (configurable/policy)
-    Crashpad\                   local crash dumps (never uploaded unless enabled)
-    Logs\
-  README-PORTABLE.txt           where data lives, how to delete it, how to verify
+BrowserX\
+  browserx.exe                 small signed launcher
+  portable.json                signed marker (mode, data dir, version channel)
+  App\<ver>\                   unpacked Chromium Application dir (signed)
+  App\<prev-ver>\              kept for rollback
+  current.json                 active version (written only by updater)
+  Data\User Data\              Chromium profile(s): visible, normal attributes
+  Data\Downloads\              default download dir (policy-overridable)
+  Data\Crashpad\               local-only crash dumps
+  README-PORTABLE.txt          data location, deletion, verification steps
 ```
 
-Rules:
+- **How it is implemented:** the patch `patches/portable/user-data-dir.patch` makes `chrome::GetDefaultUserDataDirectory` return `<root>\Data\User Data` **only** when `portable.json` is present, its signature checks out, and policy allows. A plain `--user-data-dir` launcher is **not** used, because users could change it and it gives no policy check.
+- **No hidden or unexpected storage:** no hidden attributes, no ADS, no registry writes in portable mode (the patch skips `setup`, shell integration and default-browser checks). Remaining writes outside `Data\` (`%TEMP%`, Windows-required caches) are measured in Phase 4 and listed in the README.
+- **Retention:**
+  - Chromium's existing settings and policies: `ClearBrowsingDataOnExitList`, `SavingBrowserHistoryDisabled`, `BrowserSignin=0`, `DownloadDirectory`
+  - New: `HistoryRetentionDays`
+  - Incognito never writes to the profile
+- **DPAPI:** Chromium encrypts cookies and passwords with OS-user-bound keys (and app-bound encryption on recent versions). A portable profile moved to another user or machine loses those secrets. This is intended and documented; it is not worked around.
 
-- **Not hidden.** No hidden or system attributes, no alternate data streams, no writes to unexpected locations. `Data\` is a normal, visible folder.
-- **Writes outside `Data\` are limited** to what Windows/Chromium need: `%TEMP%`, which is cleaned on exit where possible. Phase 4 tests audit this list and document it in README-PORTABLE.
-- **Retention controls:** settings and policies for history retention days, clear-on-exit (cookies/cache/history/downloads list), and download-folder location. Private windows never write to `Data\Profile`.
-- **Encryption caveat (documented):** Chromium protects cookies and saved secrets with DPAPI, which is tied to the Windows user. Copying a portable folder to another user or machine loses those secrets. That is intended, and the UI says so on first run. We do not weaken DPAPI binding to make profiles "more portable".
-- **Removal:** deleting the portable root removes the product and all its data. The README lists any `%TEMP%` residue.
+### 6.3 When administrator policy disallows portable mode
 
-### 6.3 Behaviour when administrator policy disallows portable mode
+Policy: `HKLM\SOFTWARE\Policies\BrowserX\PortableModeAllowed`. It is a new policy, defined in `patches/policy/` and included in the generated ADMX.
 
-Policy key: `HKLM\SOFTWARE\Policies\BrowserX\PortableModeAllowed` (DWORD). HKCU is consulted only if HKLM is absent and the organization's template allows user-level policy.
-
-| Policy state | Behaviour |
+| State | Behaviour |
 |---|---|
-| `PortableModeAllowed = 0` | Portable launch **stops before creating any browser process or writing any data**. A clear dialog says: "Your organization does not allow the portable version of Browser-x on this device. Please install the approved version from IT." It also shows a button that opens `PortableBlockedHelpUrl` (policy-set, e.g. the company portal) if configured. Exits with a documented code. The event is written to the Windows Application event log so IT can see it. |
-| `PortableModeAllowed = 1` | Portable runs normally. |
-| Not configured | Portable runs. Decision D3 asks whether the default should instead be "deny unless allowed" for managed builds. An org build can ship with `admin.json` setting the default to deny. |
-| Host control blocks the exe (AppLocker, WDAC, SRP, Defender, EDR) | The browser does nothing to detect, evade or work around it. Windows' own block message is the outcome. Documentation tells users to contact IT. |
+| `0` | The launcher and `PortableModeService` read the registry value **before** creating the profile or starting child processes. They show the dialog "Your organization doesn't allow the portable version of Browser-x on this device. Please install the IT-approved version.", plus a button for `PortableBlockedHelpUrl` if set. They write a Windows Application event-log entry and exit with a documented code. **No files are written.** |
+| `1` | Runs. |
+| Not configured | Runs (decision D3: org builds may ship deny-by-default). |
+| Blocked by AppLocker/WDAC/SRP/Defender/EDR | The browser does nothing to detect, evade or work around it. Docs say to contact IT. |
 
-Browser-x will **not**: hide its process or window, rename itself, use alternate executables, skip or suppress policy, disable or tamper with endpoint protection, avoid logging, or offer "stealth" or "boss key" features.
+**Never implemented:**
+- hiding processes or windows
+- renamed or alternate executables to dodge allowlists
+- ignoring or suppressing HKLM policy
+- disabling or tampering with endpoint protection
+- suppressing logs
+- "stealth" or "boss key" modes
+- `--no-sandbox` or other security-weakening flags in any package
 
-### 6.4 Update and rollback
+### 6.4 Updates and rollback
 
-- **Installed:** IT-managed by default. MSI major upgrades with the same UpgradeCode. The optional built-in update *checker* only notifies, and `UpdateCheckEnabled` policy can turn it off. IT controls rollout rings.
+Chromium builds do not include Google Update. Options:
+
+- **Installed:** IT-managed MSI upgrades (default). There is an optional in-browser "update available" notice that only checks for and notifies about new versions, gated by `UpdateCheckEnabled`. Chromium's open-source `chrome/updater` (Omaha 4) can be adopted later as decision D11. It is capable but adds a server-side component.
 - **Portable:**
-  1. The update checker (policy-gated; off when `UpdateCheckEnabled=0` or `UpdateSource` points to an internal mirror) fetches a signed manifest over HTTPS.
-  2. It downloads the zip and verifies the **SHA-256 from the signed manifest** and the **Authenticode signature of every PE file** against the pinned publisher.
-  3. It extracts to `App\<new>\` side by side, runs a self-test launch (`--self-test` exits 0 if the sandbox and resources are OK), and then atomically rewrites `current.json`.
-  4. It keeps the previous version. If launch fails, or the user picks "Roll back" in `browserx://version`, it reverts `current.json`. It keeps N=2 versions.
-  5. Before profile schema migrations it backs up `Data\Profile\*.sqlite` to `Data\Backups\<old-version>\`.
-- **Minimum-version policy:** `MinimumVersion` makes old builds show a "this version is no longer approved" message.
-- **No silent self-updates** in portable mode unless `AutoApplyUpdates=1` is set by policy.
+  1. Fetch the signed manifest from `updateHostname` (or the policy `UpdateSource` mirror).
+  2. Download the zip and verify its SHA-256 from the manifest and the Authenticode signature of every PE against the pinned publisher.
+  3. Extract to `App\<new>\` and run `--self-test` (sandbox + resources).
+  4. Atomically switch `current.json`, keeping N=2 versions. Roll back automatically on failed launch, or manually from `browserx://version`.
+  5. Back up `Data\User Data\*\` databases before profile-version changes. Chromium refuses to open a profile from a newer version. This is surfaced in the UI and fixed by rolling back.
+- `MinimumVersion` policy: old builds show "no longer approved by your organization".
+- No silent self-update in portable mode unless policy `AutoApplyUpdates=1`.
 
-### 6.5 How IT verifies version and source
+### 6.5 IT verification of version and source
 
-- **Authenticode** signature on every `.exe`/`.dll` we ship, timestamped. CEF/Chromium DLLs are signed by us as the distributor.
-- **Published checksums:** `SHA256SUMS` plus a detached signature (Sigstore/cosign or minisign, decision D6), posted with every release.
-- **Build provenance:** GitHub Actions build with SLSA provenance attestations (`actions/attest-build-provenance`), linking each artifact to its git commit and workflow run.
-- **SBOM:** CycloneDX SBOM per release, including the exact CEF/Chromium version.
-- **In-product:** `browserx://version` and `browserx.exe --version` (prints version, commit, CEF/Chromium version, and build ID). The Windows file version resource matches.
-- **Pinned CEF input:** the CEF binary distribution is downloaded by exact version and verified against a committed SHA-256 before build.
+- Authenticode signatures (timestamped) on all `.exe`/`.dll` files we ship.
+- `SHA256SUMS` + detached signature (Sigstore or minisign, decision D6) per release.
+- SLSA build provenance from the release workflow, plus a CycloneDX SBOM listing the Chromium version and `third_party/` components.
+- `browserx://version`, `browserx.exe --version`, and Windows file-version resources all agree.
+- Source traceability: `chromium_version.txt` + git commit of this repo + `patches/series` hash, embedded in the build (as midori's mozconfig sets `MOZ_SOURCE_REPO`/`MOZ_SOURCE_CHANGESET`).
 
 ### 6.6 Administrator configuration
 
-- **Sources, in priority order:**
-  1. `HKLM\SOFTWARE\Policies\BrowserX` (GPO/Intune via ADMX)
-  2. `HKCU\SOFTWARE\Policies\BrowserX`
-  3. `admin.json` next to the exe. Read-only, honored only if the file is signed, or if the folder is not user-writable (decision D4)
-  4. User settings
-- **Templates:** `browserx.admx/.adml` generated from a single policy schema (`policy/policy_schema.json`), plus Intune OMA-URI docs.
-- **Chromium policies:** forwarded where CEF honors them, via `chrome_policy_id` → `SOFTWARE\Policies\BrowserX\Chromium`. The Phase 0 spike produces a **tested support matrix**. Unsupported policies are documented as such, never silently claimed.
-- **MVP policy set:**
+- The **full Chromium policy set is inherited**. Patch the registry path from `SOFTWARE\Policies\Chromium` to `SOFTWARE\Policies\BrowserX` (`components/policy/...` path constants) and rebrand the generated **ADMX/ADML**, JSON and docs (`components/policy/tools/template_writers`).
+- New Browser-x policies:
   - `PortableModeAllowed`, `PortableBlockedHelpUrl`
-  - `PrivateBrowsingAllowed`
-  - `DefaultSearchProviderUrl`
-  - `HomepageUrl`/`NewTabPageUrl`
-  - `URLBlocklist`/`URLAllowlist`
-  - `DownloadDirectory`, `DownloadRestrictions`
-  - `DefaultPermission_*` and `PermissionSiteList_*`
-  - `ThirdPartyCookiesBlocked`, `TrackerBlockingMode`, `HttpsOnlyMode`
-  - `ClearDataOnExit`, `HistoryRetentionDays`
-  - `UpdateCheckEnabled`, `UpdateSource`, `MinimumVersion`
-  - `CrashReportingEnabled`, `CrashReportUrl`
-  - `RemoteDebuggingAllowed` (default off)
-  - `ProxySettings` (or defer to system proxy)
-  - `ApprovedExtensions` (reserved, no effect until extensions ship)
-- **Host policies honored:** system proxy, the Windows certificate store and enterprise root CAs (Chromium uses them), Windows Defender SmartScreen via Mark-of-the-Web, and Windows Firewall. Nothing is disabled.
+  - `TrackerBlockingMode`, `TrackerBlockingListUrl`
+  - `HistoryRetentionDays`
+  - `UpdateCheckEnabled`, `UpdateSource`, `AutoApplyUpdates`, `MinimumVersion`
+  - `CrashReportUploadUrl`
+- Approved extensions: Chromium's `ExtensionInstallAllowlist`/`ExtensionInstallForcelist`/`ExtensionSettings`. These work in portable mode too because policy is machine-level.
+- `initial_preferences` (installed) and `configs/policies/defaults/` set first-run defaults. Like midori's `distribution/policies.json`, they are **defaults only**. IT policy always overrides them.
+- Host policy honored: system proxy, Windows cert store/enterprise roots, SmartScreen via Mark-of-the-Web, and Windows Firewall. Nothing is disabled.
+
+### 6.7 CI/CD (mirrors midori `.github/workflows`)
+
+| Workflow | Runner | Purpose |
+|---|---|---|
+| `ci.yml` | GitHub-hosted | Lint, `bx` unit tests, license check, `browserx.json` schema check |
+| `patches.yml` | Self-hosted Windows (cached checkout) | Verify `patches/series` applies cleanly to the pinned tag |
+| `build-windows.yml` | Self-hosted Windows, 32+ cores / 64 GB+ RAM / 500 GB SSD | `bx build win-x64` + Chromium test subsets + sandbox gate + network audit |
+| `update-chromium.yml` | Scheduled daily | Detect new Chromium stable tag, open PR with bump and conflict report |
+| `release.yml` | Self-hosted, protected environment | Package, sign (HSM/cloud signing, two-person approval), SBOM, provenance, checksums, publish |
 
 ---
 
 ## 7. Security, policy, update and licensing
 
-### 7.1 Chromium security update cadence and ownership
+### 7.1 Chromium security cadence and ownership
 
-- **Owner:** a named **Release Security Owner** (decision D7), plus a backup.
-- **Cadence:** follow CEF's builds of Chrome **stable**. Check daily, automated with a bot that opens a PR when a new CEF stable build appears.
+- **Owner:** a named Release Security Owner plus a backup (decision D7). This is the key staffing commitment for a fork.
+- **Cadence:**
+  - Track Chromium **stable** (Extended Stable is an option for enterprise, decision D13).
+  - `update-chromium.yml` opens a PR within 24 h of a stable tag.
 - **SLA:**
-  - Chrome releases marked as fixing an in-the-wild exploit: signed release within **72 h** of CEF availability
+  - In-the-wild exploit fixes: shipped within **72 h** of the upstream release
   - Other security releases: within **7 days**
-  - Milestone bumps: within **14 days**
-  - Never more than one milestone behind stable
-- **Advisory:** each release note links the Chrome Releases post it includes.
-- **End of support:** builds older than the current minus 1 are marked unsupported. `MinimumVersion` lets IT enforce this.
+  - Milestones: within **14 days**
+  - Never more than one milestone behind
+- **Rebase discipline:** patch count and size are tracked in CI. Any patch touching security-sensitive code (sandbox, IPC, net, policy) needs two reviewers.
+- **Unsupported builds:** releases more than one milestone behind are marked unsupported, and `MinimumVersion` lets IT enforce this.
 
-### 7.2 Sandbox requirements (non-negotiable)
+### 7.2 Sandbox
 
-- Ship with the Chromium sandbox **enabled** for renderer, GPU, network and utility processes. Use CEF's supported Windows sandbox integration for the chosen branch, either linking `cef_sandbox` into the executable or using CEF's bootstrap executable model on newer branches. This is confirmed in the Phase 0 spike.
-- Site isolation stays at Chromium defaults.
-- CI release gate: an integration test launches the browser and asserts that renderer processes run at Untrusted integrity / restricted token, using `browserx://sandbox` or the process token API. **A release is blocked if this fails.**
-- `--no-sandbox` and similar switches are stripped and unit-tested (§5.3). There is **no** "compatibility mode" that disables the sandbox, in packaging or anywhere else.
+- Chromium's sandbox, site isolation and process model stay at **upstream defaults**.
+- No patch may weaken them. Code review checklist and AGENTS.md rule.
+- CI release gate: launch the built browser and assert renderer integrity level/AppContainer via `chrome://sandbox` data. **A failure blocks the release.**
+- The launcher and the policy defaults never pass `--no-sandbox`, `--disable-web-security`, `--disable-site-isolation-trials` or remote-debugging flags.
+- `RemoteDebuggingAllowed` defaults to false in managed defaults.
 
-### 7.3 Downloads, permissions and profiles
+### 7.3 Downloads, permissions, profiles
 
-- **Downloads:**
-  - Use Chromium's download path so Mark-of-the-Web / `IAttachmentExecute` attaches (verified in the Phase 3 test), letting SmartScreen and AV scan the file.
-  - Show the full filename and extension, warn on dangerous types, and honor the `DownloadRestrictions` policy. Never auto-open executables.
-- **Permissions:**
-  - Everything is denied or prompted by default, there is no blanket grant, and grants are scoped per origin.
-  - Prompts are attributed to the top-level origin and suppressed in background tabs.
-  - Permissions granted in private windows are discarded on close.
-- **Profiles:**
-  - Profile directories are created with user-only ACLs (inherited from `%LOCALAPPDATA%` or the IT-approved portable folder).
-  - Refuse to run a profile created by a newer version (no silent downgrade corruption).
-  - A lock file prevents two instances on one profile.
-  - SQLite runs with WAL and integrity checks on startup.
+- **Downloads:** inherited Chromium download protection: Mark-of-the-Web, `DownloadRestrictions` policy, dangerous-file warnings. A Phase 3 test verifies `Zone.Identifier` on downloaded executables.
+- **Permissions:** inherited per-origin model. Browser-x tightens defaults (e.g. notifications quieter) and surfaces them in the privacy panel.
+- **Profiles:** inherited locking, versioning and encryption. Portable mode changes **only** the location (§6.2).
 
 ### 7.4 Dependency and license review
 
-- **Inventory:** CEF (BSD-3), Chromium and its bundled third-party code (BSD, MIT, LGPL including FFmpeg, MPL, Apache-2.0, etc.), SQLite (public domain), filter-list data (EasyList/EasyPrivacy are GPLv3 / CC BY-SA 3.0 dual-licensed, which needs review for distribution terms), and any UI libraries.
-- **Generate `THIRD_PARTY_NOTICES`** from CEF's `CREDITS.html` plus our own deps, and serve it at `browserx://credits`.
-- **Do not ship** proprietary codecs or Widevine without a licensing decision (D8).
-- **Dependency updates:** Dependabot/Renovate for our deps, and the CEF bump bot for the engine. A CycloneDX SBOM and OSV/vulnerability scan run on every release.
+- **Chromium:** BSD-3 + `third_party/` (BSD, MIT, Apache-2.0, LGPL including FFmpeg, MPL, etc.). Generate `about:credits` (`tools/licenses/licenses.py`), ship it as `THIRD_PARTY_NOTICES`, and check it in `bx license-check`.
+- **Our additions:** BSD-3 recommended (D5). `adblock-rust` (MPL-2.0) and filter lists (GPL/CC BY-SA) need legal review (D8).
+- **No Google API keys** are embedded. Building with Google keys or connecting to Google services (sync, Safe Browsing, translate) has terms that a fork must accept separately.
+- **No codecs/DRM** without licensing (D9).
+- **No Midori/Astian trademarks or artwork.** Our own branding only.
+- Dependabot/Renovate for `tools/bx` deps, and an OSV scan of the SBOM per release.
 
-### 7.5 Crash reporting and telemetry defaults
+### 7.5 Crash reporting and telemetry
 
-- **Telemetry: none.** There is no usage metrics, URL collection, or experiments service. The only outbound requests the browser makes on its own are:
-  - the update check (policy-gated)
-  - filter-list updates (policy-gated, configurable source)
-  - certificate revocation and checks Chromium does as part of TLS
-
-  These are documented in `docs/network-requests.md` and verified by a Phase 4 test that records all traffic from a fresh profile on an idle new-tab page.
-- **Crash reporting:**
-  - Crashpad writes dumps **locally** to `Data\Crashpad` (portable) or the profile folder (installed).
-  - Upload is **off** by default.
-  - It can be enabled per user (opt-in dialog showing what is sent), or by IT pointing `CrashReportUrl` at an organization-owned server.
-  - Dumps can contain page memory, so this is explained in the dialog.
-- Google API keys and Google services (e.g. spelling service, translate) are not configured. Spellcheck uses bundled Hunspell dictionaries or is off.
+- **Telemetry off by default and removed where possible:**
+  - UMA/metrics upload disabled at build level (`enable_reporting`-related args + patches), with the policy `MetricsReportingEnabled=false` forced in defaults
+  - variations/field-trial fetching disabled
+  - Google API keys absent
+  - promotional and "what's new" fetches removed
+- **Network audit test (Phase 4):** a fresh profile on an idle NTP is recorded for 10 minutes. The only allowed requests are the update check (policy-gated), the tracker-list update (policy-gated), and TLS/revocation traffic. Results go in `docs/network-requests.md`.
+- **Crash reporting:** Crashpad writes locally, and **uploading is off**. Users can opt in through a dialog that explains dumps may contain page data, or IT can set `CrashReportUploadUrl` to an org-owned server.
 
 ### 7.6 Vulnerability reporting and release process
 
-- **`SECURITY.md`:** private reporting via GitHub Security Advisories, 90-day disclosure, acknowledgement within 3 business days. Chromium/CEF bugs are forwarded upstream.
-- **Release process (documented in `docs/release-process.md`):**
-  1. CEF bump PR, with full CI (unit + integration + sandbox gate + network-request audit).
-  2. Tag, then a reproducible CI build on a clean runner.
-  3. Signing step on a protected environment (HSM/cloud signing, two-person approval).
-  4. Generate the SBOM, provenance and `SHA256SUMS`, then sign the checksums.
-  5. Publish the MSI, portable zip and signed update manifest.
-  6. Release notes with CVE and Chrome-release links.
-- **Rollback:** stop serving the update manifest and republish the previous version as current. Portable clients roll back locally (§6.4).
-- **Project license (D5)** must be chosen in Phase 0 and be compatible with redistributing CEF/Chromium (permissive licenses such as BSD-3 or Apache-2.0 are simplest).
+- **`SECURITY.md`:** GitHub private advisories, acknowledgement within 3 business days, 90-day disclosure. Upstream Chromium bugs are reported to crbug.com, following Chromium's security process.
+- **Release steps:**
+  1. Bump PR
+  2. Green `patches` + `build-windows`, including the sandbox gate and network audit
+  3. Tag
+  4. Clean release build
+  5. Sign (protected environment)
+  6. SBOM, provenance and checksums
+  7. Publish MSI, portable zip and update manifest
+  8. Release notes linking the Chrome Releases post and CVEs
+- **Rollback:** pull the update manifest and republish the previous build. Portable clients can roll back locally.
 
 ---
 
-## 8. Phased implementation sequence and acceptance criteria
+## 8. Phased implementation and acceptance criteria
 
 ```
-Phase 0 ─► Phase 1 ─► Phase 2 ─┬─► Phase 3 ─┐
-                               └─► Phase 4 ─┴─► Phase 5 ─► Phase 6
+P0 Foundations ─► P1 Unbranded build ─► P2 Branding & de-Googling ─┬─► P3 Privacy features ─┐
+                                                                    └─► P4 Policy & portable ─┴─► P5 Packaging/update ─► P6 Release readiness
 ```
 
-### Phase 0: Foundations and spikes (no product code yet)
+### Phase 0: Foundations
 
-**Depends on:** decisions D1, D5, D7.
+**Depends on:** decisions D1, D5, D7. Build hardware ordered, signing cert procurement started.
 
 **Work:**
-- AGENTS.md, LICENSE, SECURITY.md, coding standards, CMake skeleton, CI on `windows-latest` (build + empty tests).
-- CEF fetch script with version pin and SHA-256 verification.
-- **Spike 1:** minimal CEF window with the sandbox enabled.
-- **Spike 2:** which Chromium policies work via `chrome_policy_id`.
-- **Spike 3:** behaviour of the permission, download/MOTW and cookie/HTTPS preference APIs on the pinned CEF branch.
-- **Spike 4:** measure package size and memory.
+- Repo skeleton (§5.1), `AGENTS.md`, `LICENSE`, `SECURITY.md`, `browserx.json` + schema
+- `tools/bx` with `download`/`import`/`export`/`build`/`run`
+- `ci.yml`
+- Self-hosted Windows runner set up
+- `docs/building-windows.md`
 
 **Acceptance:**
-- CI builds a signed-with-test-cert "hello" CEF app from a clean checkout.
-- The sandbox gate test passes.
-- A written spike report with a tested policy support matrix and measured size/RAM numbers.
-- A go/no-go on Option B, recorded in `docs/adr/0001-engine.md`.
+- `bx download && bx import && bx build win-x64` produces a **plain Chromium** (empty patch series) on the runner, from a clean machine, following the doc only.
+- Build time and disk usage are recorded.
 
-### Phase 1: Shell and navigation
+### Phase 1: Patch pipeline
 
-**Depends on:** Phase 0.
+**Depends on:** P0.
 
-**Work:** main window, tab strip, TabManager, toolbar, omnibox with search provider, keyboard shortcuts, `DataPathResolver` (installed mode), SettingsStore, command-line hardening, `browserx://` scheme with allowlisted IPC, `browserx://version`.
-
-**Acceptance:**
-- Open/close/switch 20 tabs without leaks (measured).
-- Navigation, back/forward and reload work on a top-sites compatibility list.
-- Dangerous switches are stripped (unit tests).
-- Web content cannot navigate to `browserx://` (test).
-- The version page shows the commit and CEF version.
-
-### Phase 2: Data features
-
-**Depends on:** Phase 1.
-
-**Work:** SQLite stores and migrations, bookmarks (+ HTML import/export), history (+ retention), downloads UI, new-tab page, private windows (in-memory request context).
+**Work:**
+- `patches/series` mechanism and `bx export`
+- `patches.yml`
+- `bx update` with conflict reporting
+- `update-chromium.yml`
+- First trivial patch (version string)
 
 **Acceptance:**
-- Data persists across restarts.
-- A private window leaves no new files or rows in the profile (filesystem diff test).
-- History retention purges correctly.
-- The migration test upgrades a v0 database.
+- A drill bumping one Chromium stable tag goes from PR to built binary within 24 h.
+- A patch conflict produces a readable report naming the patch and hunk.
 
-### Phase 3: Privacy and permissions
+### Phase 2: Branding and de-Googling
 
-**Depends on:** Phase 2.
+**Depends on:** P1.
 
-**Work:** PrivacyEngine (filter lists, third-party cookies, HTTPS-Only, GPC), PermissionManager with prompts and per-site settings, privacy/status panel, download safety (MOTW, dangerous-type warnings), clear-on-exit.
+**Work:**
+- `configs/branding/stable`
+- Product name, user-data dir, policy registry path, and update URLs patched
+- Telemetry, variations and API-key services disabled
+- Remote search suggestions off
+- `browserx://version` additions
 
 **Acceptance:**
-- Tracker test page blocks expected requests.
-- Third-party cookies are blocked by default (test site).
-- HTTPS-Only upgrades or warns.
-- Each permission type can be granted, denied and revoked, and private-window grants vanish.
-- Downloaded `.exe` carries `Zone.Identifier`.
-- The panel matches the actual state.
+- No "Chromium"/"Google Chrome" strings in user-visible UI (string scan).
+- Policies are read from `SOFTWARE\Policies\BrowserX`.
+- The network audit shows no Google-service traffic on a fresh profile.
+- The version page shows the commit and Chromium tag.
+
+### Phase 3: Privacy features
+
+**Depends on:** P2.
+
+**Work:**
+- Cookie, HTTPS and GPC defaults
+- Content-blocking engine + list component
+- Privacy/status panel
+- New-tab WebUI
+- Permission-default tuning
+
+**Acceptance:**
+- The tracker test page blocks the expected requests, with a per-site toggle.
+- Third-party cookies are blocked by default.
+- The GPC header is sent.
+- The panel reflects real state (browser test).
+- The NTP makes zero network requests.
+- Downloaded `.exe` files have `Zone.Identifier`.
 
 ### Phase 4: Policy and portable mode
 
-**Depends on:** Phase 2 (can run alongside Phase 3).
+**Depends on:** P2 (can run alongside P3).
 
-**Work:** PolicyService with all sources, ADMX/ADML generator, locked-setting UI, Chromium policy forwarding, portable marker and `Data\` layout, `PortableModeAllowed` enforcement with dialog and event log, write-location audit, network-request audit.
-
-**Acceptance:**
-- With `PortableModeAllowed=0`, portable mode shows the IT dialog, writes **zero** files, and starts no child processes (test).
-- Every MVP policy has an automated test.
-- ADMX loads in the Group Policy editor.
-- The portable run writes only to `Data\` + `%TEMP%` (Process Monitor-based audit, documented).
-- A fresh profile makes no unexpected network requests.
-
-### Phase 5: Packaging, signing, update and rollback
-
-**Depends on:** Phases 3 and 4, plus a signing certificate.
-
-**Work:** WiX MSI, portable zip, signing pipeline, `SHA256SUMS` + signature, SBOM, provenance, signed update manifest, updater with side-by-side install and rollback, `--self-test`, `MinimumVersion`.
+**Work:**
+- New policy definitions
+- Rebranded ADMX generation
+- `PortableModeService` + user-data-dir patch + launcher
+- `PortableModeAllowed` enforcement with dialog and event log
+- Write-location audit
+- Managed default policy sets
 
 **Acceptance:**
-- Every shipped PE file is validly signed (`signtool verify /pa` in CI).
-- Checksums and provenance verify from the published docs.
-- The MSI installs and uninstalls cleanly via Intune test tenant or ConfigMgr lab.
-- Portable update A→B succeeds, a corrupted update is rejected, and rollback B→A works with an intact profile.
-- `UpdateCheckEnabled=0` causes no update traffic.
+- With `PortableModeAllowed=0`, zero files are written and no child process starts (test).
+- The ADMX imports into Group Policy, and new and inherited policies apply (policy browser tests).
+- A portable run writes only to `Data\` + documented temp paths.
+- An extension allowlist works in portable mode.
 
-### Phase 6: Hardening and release readiness
+### Phase 5: Packaging, signing, update
 
-**Depends on:** Phase 5.
+**Depends on:** P3, P4, signing cert.
 
-**Work:** external security review/pen test of the shell (IPC, scheme handler, updater), accessibility pass (keyboard, screen reader on the shell UI), crash-reporting opt-in flow, docs (user, IT admin guide, policy reference, network requests, portable README), first CEF-bump drill against the SLA.
+**Work:**
+- MSI, portable zip
+- `sign.ps1`
+- `SHA256SUMS` + signature, SBOM, provenance
+- Update manifest, side-by-side updater, rollback, `MinimumVersion`
+- `release.yml`
 
 **Acceptance:**
-- No open high/critical findings.
-- The CEF-bump drill meets the 72 h target end to end.
-- The IT admin guide is reviewed by an actual IT/security stakeholder.
-- 1.0 is signed off by the Release Security Owner.
+- `signtool verify /pa` passes on every PE.
+- Checksums and provenance verify following the public docs.
+- MSI install, upgrade and uninstall work in an Intune or ConfigMgr lab.
+- Portable update and rollback work, and a tampered zip is rejected.
+- `UpdateCheckEnabled=0` produces no update traffic.
+
+### Phase 6: Release readiness
+
+**Depends on:** P5.
+
+**Work:**
+- External security review of our patches, updater and portable code
+- Accessibility check of the new UI (panel, NTP)
+- IT admin guide, policy reference, `README-PORTABLE`
+- A full security-release drill against the 72 h SLA
+
+**Acceptance:**
+- No open high or critical findings.
+- The drill meets the SLA.
+- An IT/security stakeholder signs off on the admin guide.
+- The Release Security Owner approves 1.0.
 
 ---
 
-## 9. Main risks and unknowns
+## 9. Risks, unknowns, and decisions
 
-| ID | Risk / unknown | Impact | Mitigation |
-|---|---|---|---|
-| R1 | CEF honors fewer Chromium enterprise policies than IT expects | IT adoption blocked | Phase 0 spike produces an exact matrix. Implement critical ones in the shell. Escalate to Option A if gaps are unacceptable |
-| R2 | Security-patch SLA missed (small team) | Users exposed to known exploits | Named owner + backup, automated bump PRs, release drill, `MinimumVersion` policy. Or choose WebView2 Evergreen (D1) |
-| R3 | No Safe Browsing in MVP | Weaker phishing/malware protection than Chrome/Edge | SmartScreen via MOTW for downloads. Schedule Safe Browsing for v1.1 (needs API agreement). Disclose in docs |
-| R4 | Portable mode perceived as a "shadow IT" vector | Security-team rejection | Identical signed binaries (allowlist-friendly), `PortableModeAllowed` policy, event logging, visible data, no evasion features, IT verification docs |
-| R5 | Package size (~100+ MB) conflicts with "lightweight" expectation | Product perception | Define "lightweight" as UI/background-service minimalism and measured RAM. Publish real numbers from Spike 4 |
-| R6 | CEF API churn between branches (permissions, sandbox bootstrap, Chrome vs Alloy style) | Rework on bumps | Pin a branch, wrap CEF behind thin interfaces, keep integration tests broad |
-| R7 | Filter-list licensing (GPL/CC BY-SA) | Distribution/legal issue | Legal review in Phase 3, or fetch lists at runtime from a source that IT can configure |
-| R8 | DPAPI binding makes portable profiles non-transferable | User confusion | Document it and show a first-run notice. This is intended behaviour |
-| R9 | No code-signing identity yet | Cannot distribute | Procure in Phase 0–1, so it is not on the Phase 5 critical path |
+### Risks
 
-### Decisions requiring product or organizational input
+| ID | Risk | Mitigation |
+|---|---|---|
+| R1 | Weekly rebase burden is underestimated, so security fixes ship late | Named owner and backup, small patches, `src/` overlay over in-place edits, automated bump PRs, SLA drills. Fallback to CEF (D1) |
+| R2 | Build farm cost and complexity (Windows runners, ~hours per build) | Persistent incremental checkouts, our own RBE (BuildBuddy/EngFlow) once volume justifies it, release builds on dedicated machines |
+| R3 | No Safe Browsing (needs an agreement with Google or Microsoft) | SmartScreen via MOTW meanwhile. D10 sets a timeline. Disclose in docs |
+| R4 | Portable mode seen as a shadow-IT vector | Identical signed binaries, HKLM `PortableModeAllowed`, event log, visible data, no evasion features, IT verification docs |
+| R5 | "Lightweight" expectation vs. Chromium's real size and RAM | Define lightweight as minimal UI + no background services. Publish measured numbers |
+| R6 | Chrome Web Store terms and behaviour for non-Google Chromium builds | D12: allow CWS, allowlist-only via policy, or self-hosted extension catalog |
+| R7 | Filter-list and `adblock-rust` licensing | Legal review in P3 (D8). Self-curated list as a fallback |
+| R8 | Trademark confusion with Midori/Chrome | Own name and assets (D11). The string scan in P2 catches leftovers |
+| R9 | Code-signing cert lead time | Procure in P0 |
+
+### Decisions needed
 
 | ID | Decision |
 |---|---|
-| D1 | Engine: CEF (recommended) vs. WebView2 Evergreen vs. full fork (A). Depends on patch-ownership capacity and whether portable may depend on the system WebView2 runtime |
-| D2 | Default search engine and whether to offer search suggestions (privacy trade-off) |
-| D3 | Portable-mode default when no policy is set: allow, or deny-unless-allowed |
-| D4 | Whether `admin.json` must be signed by the organization, or only trusted when in a non-user-writable folder |
-| D5 | Project license |
-| D6 | Checksum signing method (Sigstore keyless vs. minisign/GPG key) |
-| D7 | Who is the Release Security Owner and backup, and what patch SLA is committed |
-| D8 | Proprietary codecs / DRM: needed? (licensing + custom CEF build) |
-| D9 | Safe Browsing provider and timeline |
-| D10 | Supported Windows versions (proposal: Windows 10 22H2 x64 and Windows 11 x64; confirm Win10 given its consumer end-of-support) |
-| D11 | Final product name and branding (not "Midori") |
+| D1 | Confirm full Chromium fork (this plan) and fund build farm + rebase owner, or fall back to CEF |
+| D2 | Default search engines; remote suggestions on or off |
+| D3 | Portable-mode default with no policy: allow or deny |
+| D4 | Must `portable.json`/admin defaults be signed by the organization's key in addition to ours? |
+| D5 | Project license (BSD-3 recommended) |
+| D6 | Checksum signing (Sigstore vs minisign/GPG) |
+| D7 | Release Security Owner + backup; SLA commitment |
+| D8 | Tracker-blocking engine and list licensing |
+| D9 | Proprietary codecs / Widevine |
+| D10 | Safe Browsing provider and timeline |
+| D11 | Product name, branding, and updater approach (own manifest vs Omaha 4) |
+| D12 | Extension policy: Chrome Web Store access, allowlist-only, or none in MVP |
+| D13 | Stable vs Extended Stable channel |
 
 ---
 
 ## 10. First implementation tasks
 
-These are the first tasks after this plan is approved. None has been started.
-
-1. **Record decisions D1, D5, D7, D10** in `docs/adr/` (engine, license, security owner, Windows versions).
-2. **Bootstrap the repo:** `AGENTS.md`, `LICENSE`, `SECURITY.md`, `.gitignore`, `CMakeLists.txt`, and a GitHub Actions `windows-latest` build job.
-3. **CEF fetch script** (`cmake/FetchCEF.cmake`) pinned to one CEF stable version with SHA-256 verification. The build fails on mismatch.
-4. **Spike 1:** minimal sandboxed CEF window, plus the sandbox integrity-level test as the first CI release gate.
-5. **Spike 2:** Chromium policy support matrix via `chrome_policy_id` → `docs/policy-support-matrix.md`.
-6. **Spike 3/4:** verify the permission, download/MOTW and cookie/HTTPS APIs. Measure package size and idle/10-tab RAM → `docs/spike-report.md`.
-7. **Draft `policy/policy_schema.json`** with the MVP policy set and `PortableModeAllowed` semantics from §6.3.
-8. **Start code-signing certificate procurement** (long lead time).
+1. Record D1, D5, D7, D11 in `docs/adr/` (fork confirmed, license, security owner, name).
+2. Order or provision a self-hosted Windows build runner (32+ cores, 64 GB+ RAM, 500 GB SSD, VS 2022 + pinned SDK). Start code-signing cert procurement.
+3. Create the repo skeleton from §5.1: `AGENTS.md`, `README.md` (with "Build from source" for Windows, like midori's), `browserx.json` + JSON schema, `chromium_version.txt`, `.gitignore` (excluding `chromium/`).
+4. Implement `tools/bx`: `download`, `import` (copy `src/` + apply `patches/series`), `export`, `build win-x64`, `run`, with unit tests.
+5. Add `ci.yml` (lint + `bx` tests + license check) and `patches.yml`.
+6. Phase 0 exit: build an unpatched Chromium through `bx` on the runner and record time, disk and package size.
+7. First patches in `patches/branding/`: product name, user-data-dir name, policy registry path (`SOFTWARE\Policies\BrowserX`).
+8. Write `docs/policy-reference.md` stubs for the new policies, including `PortableModeAllowed` semantics from §6.3.
