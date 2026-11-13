@@ -1,0 +1,13 @@
+# Chromium checkout and build output (fetched by `bx download`, never committed)
+/chromium/
+/dist/
+/out/
+/build-launcher/
+__pycache__/
+*.pyc
+.venv/
+# Never commit signing material
+*.pfx
+*.p12
+*.pvk
+*.key

@@ -1,6 +1,6 @@
 # Browser-x: Implementation Plan (Chromium fork, structured like midori-desktop)
 
-Status: **draft for review, revision 2**. No code has been written. Nothing has been built, packaged, installed or deployed.
+Status: **revision 3, decisions D1 (Chromium fork), D5 (BSD-3) and portable-only distribution confirmed.** The repository scaffold exists (see §10). Chromium has not been fetched or built, and nothing has been packaged, installed or deployed.
 Target platform: **Windows x64** first. Windows ARM64, Linux and macOS come later, as in the reference.
 Date: 2026-11-13
 
@@ -26,7 +26,7 @@ Browser-x will be a **downstream fork of Chromium**. It follows the same layout 
 | `src/midori/workspace/` (custom features) | `src/browserx/` (custom features, e.g. privacy panel, portable mode) |
 | `midori-newtab` add-on, built-in protection extension | Built-in WebUI new-tab page, built-in content blocking |
 | `build/AppDir/distribution/policies.json` | Chromium enterprise policies (registry/ADMX) + `initial_preferences` |
-| `build/winsign/sign.ps1` + MAR updates | `packaging/windows/sign.ps1` + mini_installer/MSI + signed update manifest |
+| `build/winsign/sign.ps1` + MAR updates + NSIS/7z SFX installer | `packaging/windows/sign.ps1` + **portable-only** 7-Zip GUI SFX + signed update manifest (no installer, ADR 0002) |
 | `.github/workflows/{build-windows,patches,update-firefox,release}.yml` | Same set, with `update-chromium.yml` |
 
 **What the fork gives us for free**, compared with CEF:
@@ -124,7 +124,7 @@ Most MVP items are **inherited from Chromium and configured**. The "Work" column
 | Site permission controls | Inherited | Defaults tightened via `initial_preferences`/policy (notifications ask→block-by-default option) |
 | Privacy/status panel | **New** toolbar button + bubble, `src/browserx/privacy_panel/` | Per tab: connection/cert, blocked requests count/list, active permissions, cookies, "managed by your organization" |
 | No browsing telemetry | Patch series | Remove or disable UMA/metrics reporting, field trials/variations fetch, Google API keys, translate/spelling/autofill/sync services, Safe Browsing extended reporting, NTP promos, "phone home" endpoints (§7.5) |
-| `browserx://version` | Inherited `chrome://version` | Add the Browser-x version, git commit, Chromium version, build ID, portable/installed mode |
+| `browserx://version` | Inherited `chrome://version` | Add the Browser-x version, git commit, Chromium version, build ID, portable data path |
 
 ### 4.2 Features of the reference repo, and when they arrive
 
@@ -161,7 +161,6 @@ Browser-x/
 ├── README.md  CONTRIBUTING.md  SECURITY.md  CODE_OF_CONDUCT.md  LICENSE (BSD-3, D5)
 ├── browserx.json                ⇐ amelia.json: name, vendor, appId, binaryName, chromium.version,
 │                                   brands{stable,beta}, components, updateHostname, license
-├── chromium_version.txt         pinned tag, e.g. 1xx.0.xxxx.yy (single source of truth, read by bx)
 ├── tools/bx/                    ⇐ amelia: Python CLI (download|import|brand|build|package|run|update|export|test)
 ├── configs/
 │   ├── branding/stable/         icons, BRANDING, product_logo_*, VisualElements, installer art
@@ -182,7 +181,8 @@ Browser-x/
 │       ├── content_blocking/    filter engine glue + list component
 │       ├── portable/            portable mode detection, marker verification, policy pre-check
 │       └── webui/new_tab/       NTP (TS/HTML/CSS, Chromium WebUI conventions)
-├── packaging/windows/           sign.ps1, MSI (WiX) wrapper over mini_installer, portable zip layout
+├── launcher/                    BrowserX.exe portable launcher (C++17, CMake): policy check, Data dir, switch filter
+├── packaging/windows/           sign.ps1, make-sfx.ps1 (one-file download), README-PORTABLE.txt
 ├── scripts/                     update_chromium.py, verify-build-output, license-check, sbom, checksums
 ├── tests/                       repo-level tests (bx unit tests, patch-apply, policy, portable, network audit)
 ├── docs/                        this plan, building-windows.md, policy reference, release process
@@ -194,18 +194,18 @@ Browser-x/
 
 ```mermaid
 flowchart LR
-  V[chromium_version.txt] --> D[bx download<br/>gclient sync at tag]
+  V[browserx.json<br/>upstream.version] --> D[bx download<br/>gclient sync at tag]
   D --> I[bx import<br/>copy src/ overlay<br/>apply patches/series]
   I --> B[bx brand stable|beta<br/>copy configs/branding]
   B --> G[bx build win-x64<br/>gn gen + autoninja]
-  G --> P[bx package win-x64<br/>mini_installer, MSI, portable zip]
+  G --> P[bx package win-x64<br/>portable folder, zip, SHA256SUMS]
   P --> S[sign + SHA256SUMS + SBOM + provenance]
   U[bx update<br/>new Chromium tag] -->|rebase patches| I
   E[bx export<br/>regen patches from chromium/src edits] --> PS[patches/]
 ```
 
 - `bx export` turns edits made inside `chromium/src` back into patch files, like `amelia export`.
-- `bx update` bumps `chromium_version.txt`, re-syncs, and re-applies patches. It stops at the first conflicting patch with a report (like `update_ff.py`).
+- `bx update` bumps `upstream.version` in `browserx.json`, re-syncs, and re-applies patches. It stops at the first conflicting patch with a report (like `update_ff.py`).
 - **Patch rules:** one topic per patch, smallest diff possible, and new code goes in `src/browserx/` rather than inside upstream files. Upstream files only get thin hooks. This keeps weekly rebases cheap.
 
 ### 5.3 `bx` verbs (parity with midori-desktop scripts)
@@ -238,52 +238,62 @@ The browser runs as Chromium's own process model: browser, sandboxed renderers, 
 
 ## 6. Packaging and portable deployment (Windows)
 
-### 6.1 Distribution forms
+### 6.1 Distribution: one portable program (ADR 0002)
 
-| | Installed | Portable |
-|---|---|---|
-| Artifact | `BrowserX-<ver>-win-x64.msi` (wraps Chromium's `mini_installer`/`setup.exe`, system-level) | `BrowserX-<ver>-win-x64-portable.zip` |
-| Binaries | Authenticode-signed | **Identical** signed binaries |
-| Location | `%ProgramFiles%\BrowserX\Application\<ver>\` (Chromium layout) | IT-approved folder |
-| User data | `%LOCALAPPDATA%\BrowserX\User Data\` (patched from `Chromium`) | `<root>\Data\User Data\` |
-| Default-browser / protocol registration | Optional via installer | **Never** |
-| Updates | IT-managed MSI (Intune/ConfigMgr/GPO) | Side-by-side with rollback (§6.4) |
+There is **no installer and no MSI**. Each release consists of:
 
-Because the binaries are identical and signed, AppLocker/WDAC publisher rules cover both forms. IT decides whether either may run.
+| Artifact | Purpose |
+|---|---|
+| `BrowserX-<ver>-win-x64-portable.exe` | The one-file download: a signed 7-Zip **GUI** self-extractor (`7z.sfx`). It asks where to extract and runs nothing. |
+| `BrowserX-<ver>-win-x64-portable.zip` | The same content, for IT tooling (deterministic zip) |
+| `SHA256SUMS` (+ signature, D6) | Checksums of both |
 
-### 6.2 Portable layout and data retention
+- Users start one program: `BrowserX.exe`.
+- There is no default-browser, file-association or registry registration.
+- IT can still deploy the folder to managed devices with its own tooling (Intune/ConfigMgr file copy) and control it with AppLocker/WDAC **publisher** rules, because every PE file is signed by the same publisher.
+- **Rejected:** a single exe that unpacks about 300 MB to `%TEMP%` on every launch. It is slow, leaves data outside the portable folder, breaks IT path rules, and looks like evasive malware to EDR. See ADR 0002.
+
+### 6.2 Portable layout and data retention (implemented by `bx package` + launcher)
 
 ```
 BrowserX\
-  browserx.exe                 small signed launcher
-  portable.json                signed marker (mode, data dir, version channel)
-  App\<ver>\                   unpacked Chromium Application dir (signed)
-  App\<prev-ver>\              kept for rollback
-  current.json                 active version (written only by updater)
-  Data\User Data\              Chromium profile(s): visible, normal attributes
-  Data\Downloads\              default download dir (policy-overridable)
-  Data\Crashpad\               local-only crash dumps
-  README-PORTABLE.txt          data location, deletion, verification steps
+  BrowserX.exe                 signed launcher (launcher/), the only program users start
+  App\current.txt              active version (written only by bx / the updater)
+  App\<ver>\                   Chromium application files: browserx.exe, <chromium-ver>\ DLLs (signed)
+  App\<prev-ver>\              kept for rollback (Phase 5)
+  Data\User Data\              created on first run: Chromium profile, visible, normal attributes
+  README-PORTABLE.txt, LICENSE, THIRD_PARTY_NOTICES.html
 ```
 
-- **How it is implemented:** the patch `patches/portable/user-data-dir.patch` makes `chrome::GetDefaultUserDataDirectory` return `<root>\Data\User Data` **only** when `portable.json` is present, its signature checks out, and policy allows. A plain `--user-data-dir` launcher is **not** used, because users could change it and it gives no policy check.
-- **No hidden or unexpected storage:** no hidden attributes, no ADS, no registry writes in portable mode (the patch skips `setup`, shell integration and default-browser checks). Remaining writes outside `Data\` (`%TEMP%`, Windows-required caches) are measured in Phase 4 and listed in the README.
+- **Launcher (implemented):** `BrowserX.exe`:
+  - checks policy **before** writing anything
+  - selects `App\<ver>` (validated version names, so a version can never be a path)
+  - in release builds, verifies the Authenticode signature of `browserx.exe`
+  - creates `Data\User Data`, failing clearly if it is not writable and never falling back elsewhere
+  - starts `browserx.exe --user-data-dir=<root>\Data\User Data`
+  - drops user-supplied switches that weaken the sandbox or move data, logging an event
+- **Chromium side (Phase 4 patch `portable/portable-user-data-dir.patch`):** `browserx.exe` itself:
+  - repeats the `PortableModeAllowed` check before creating a profile, so starting `App\<ver>\browserx.exe` directly cannot skip policy
+  - defaults the profile to `<root>\Data\User Data`
+  - skips shell integration and default-browser checks
+  - **Until this patch lands, the launcher check alone can be bypassed by starting the inner exe.** IT's binding control is application control (AppLocker/WDAC), as for any software.
+- **No hidden or unexpected storage:** no hidden attributes, no ADS, no registry writes. Remaining writes outside `Data\` (`%TEMP%`, Windows-required caches) are measured in Phase 4 and listed in `docs/portable-mode.md`.
 - **Retention:**
   - Chromium's existing settings and policies: `ClearBrowsingDataOnExitList`, `SavingBrowserHistoryDisabled`, `BrowserSignin=0`, `DownloadDirectory`
   - New: `HistoryRetentionDays`
   - Incognito never writes to the profile
-- **DPAPI:** Chromium encrypts cookies and passwords with OS-user-bound keys (and app-bound encryption on recent versions). A portable profile moved to another user or machine loses those secrets. This is intended and documented; it is not worked around.
+- **DPAPI:** Chromium encrypts cookies and passwords with OS-user-bound keys (and app-bound encryption on recent versions). A portable folder moved to another user or machine loses those secrets. This is intended and documented; it is not worked around.
 
-### 6.3 When administrator policy disallows portable mode
+### 6.3 When administrator policy disallows portable mode (implemented in the launcher)
 
-Policy: `HKLM\SOFTWARE\Policies\BrowserX\PortableModeAllowed`. It is a new policy, defined in `patches/policy/` and included in the generated ADMX.
+Policy: `PortableModeAllowed` (DWORD) under `HKLM\SOFTWARE\Policies\BrowserX`, then HKCU. HKLM always wins, so HKCU=1 cannot override HKLM=0. It is added to the generated ADMX in Phase 4.
 
 | State | Behaviour |
 |---|---|
-| `0` | The launcher and `PortableModeService` read the registry value **before** creating the profile or starting child processes. They show the dialog "Your organization doesn't allow the portable version of Browser-x on this device. Please install the IT-approved version.", plus a button for `PortableBlockedHelpUrl` if set. They write a Windows Application event-log entry and exit with a documented code. **No files are written.** |
+| `0` | Before creating any file or process, show "Your organization does not allow the portable version of Browser-x on this device. Please use the browser installation approved by your IT department…", offer `PortableBlockedHelpUrl` (https only) if set, write a Warning event (source `BrowserX`, ID 1000), exit code 3. **No files are written.** Verified under Wine. |
 | `1` | Runs. |
-| Not configured | Runs (decision D3: org builds may ship deny-by-default). |
-| Blocked by AppLocker/WDAC/SRP/Defender/EDR | The browser does nothing to detect, evade or work around it. Docs say to contact IT. |
+| Not configured | Runs (`browserx.json` `policy.portableModeDefault`; decision D3 allows organization builds to ship `deny`). |
+| Blocked by AppLocker/WDAC/SRP/Defender/EDR | Browser-x does nothing to detect, evade or work around it. Docs say to contact IT. |
 
 **Never implemented:**
 - hiding processes or windows
@@ -294,19 +304,22 @@ Policy: `HKLM\SOFTWARE\Policies\BrowserX\PortableModeAllowed`. It is a new polic
 - "stealth" or "boss key" modes
 - `--no-sandbox` or other security-weakening flags in any package
 
+The launcher's list of switches it refuses to forward is in `docs/portable-mode.md` and kept in sync by a test.
+
 ### 6.4 Updates and rollback
 
-Chromium builds do not include Google Update. Options:
+Chromium builds do not include Google Update. Browser-x uses its own update mechanism:
 
-- **Installed:** IT-managed MSI upgrades (default). There is an optional in-browser "update available" notice that only checks for and notifies about new versions, gated by `UpdateCheckEnabled`. Chromium's open-source `chrome/updater` (Omaha 4) can be adopted later as decision D11. It is capable but adds a server-side component.
-- **Portable:**
-  1. Fetch the signed manifest from `updateHostname` (or the policy `UpdateSource` mirror).
-  2. Download the zip and verify its SHA-256 from the manifest and the Authenticode signature of every PE against the pinned publisher.
-  3. Extract to `App\<new>\` and run `--self-test` (sandbox + resources).
-  4. Atomically switch `current.json`, keeping N=2 versions. Roll back automatically on failed launch, or manually from `browserx://version`.
-  5. Back up `Data\User Data\*\` databases before profile-version changes. Chromium refuses to open a profile from a newer version. This is surfaced in the UI and fixed by rolling back.
+1. When `UpdateCheckEnabled` is not 0, fetch the signed manifest from `update.manifestUrl` in `browserx.json` (or the policy `UpdateSource` mirror).
+2. Download the zip and verify its SHA-256 from the manifest and the Authenticode signature of every PE against the pinned publisher.
+3. Extract to `App\<new>\` and run `--self-test` (sandbox + resources).
+4. Atomically switch `App\current.txt`, keeping N=2 versions. Roll back automatically on failed launch, or manually from `browserx://version`. The launcher already falls back to the newest valid version if `current.txt` is missing or invalid.
+5. Back up `Data\User Data\*\` databases before profile-version changes. Chromium refuses to open a profile from a newer version. This is surfaced in the UI and fixed by rolling back.
+
+Additional rules:
 - `MinimumVersion` policy: old builds show "no longer approved by your organization".
-- No silent self-update in portable mode unless policy `AutoApplyUpdates=1`.
+- No silent self-update unless policy `AutoApplyUpdates=1`.
+- Until Phase 5, users update by extracting a newer release over the folder; `Data\` is kept.
 
 ### 6.5 IT verification of version and source
 
@@ -314,7 +327,7 @@ Chromium builds do not include Google Update. Options:
 - `SHA256SUMS` + detached signature (Sigstore or minisign, decision D6) per release.
 - SLSA build provenance from the release workflow, plus a CycloneDX SBOM listing the Chromium version and `third_party/` components.
 - `browserx://version`, `browserx.exe --version`, and Windows file-version resources all agree.
-- Source traceability: `chromium_version.txt` + git commit of this repo + `patches/series` hash, embedded in the build (as midori's mozconfig sets `MOZ_SOURCE_REPO`/`MOZ_SOURCE_CHANGESET`).
+- Source traceability: `browserx.json` `upstream.version` + git commit of this repo + `patches/series` hash, embedded in the build (as midori's mozconfig sets `MOZ_SOURCE_REPO`/`MOZ_SOURCE_CHANGESET`).
 
 ### 6.6 Administrator configuration
 
@@ -326,7 +339,7 @@ Chromium builds do not include Google Update. Options:
   - `UpdateCheckEnabled`, `UpdateSource`, `AutoApplyUpdates`, `MinimumVersion`
   - `CrashReportUploadUrl`
 - Approved extensions: Chromium's `ExtensionInstallAllowlist`/`ExtensionInstallForcelist`/`ExtensionSettings`. These work in portable mode too because policy is machine-level.
-- `initial_preferences` (installed) and `configs/policies/defaults/` set first-run defaults. Like midori's `distribution/policies.json`, they are **defaults only**. IT policy always overrides them.
+- `configs/policies/managed_defaults.json` lists recommended values for IT. Like midori's `distribution/policies.json`, they are **defaults only**. IT policy always overrides them.
 - Host policy honored: system proxy, Windows cert store/enterprise roots, SmartScreen via Mark-of-the-Web, and Windows Firewall. Nothing is disabled.
 
 ### 6.7 CI/CD (mirrors midori `.github/workflows`)
@@ -400,7 +413,7 @@ Chromium builds do not include Google Update. Options:
   4. Clean release build
   5. Sign (protected environment)
   6. SBOM, provenance and checksums
-  7. Publish MSI, portable zip and update manifest
+  7. Publish the portable self-extractor, zip, `SHA256SUMS` and update manifest
   8. Release notes linking the Chrome Releases post and CVEs
 - **Rollback:** pull the update manifest and republish the previous build. Portable clients can roll back locally.
 
@@ -502,7 +515,7 @@ P0 Foundations ─► P1 Unbranded build ─► P2 Branding & de-Googling ─┬
 **Depends on:** P3, P4, signing cert.
 
 **Work:**
-- MSI, portable zip
+- Portable self-extractor + zip (scripts exist; needs real build + cert)
 - `sign.ps1`
 - `SHA256SUMS` + signature, SBOM, provenance
 - Update manifest, side-by-side updater, rollback, `MinimumVersion`
@@ -511,7 +524,7 @@ P0 Foundations ─► P1 Unbranded build ─► P2 Branding & de-Googling ─┬
 **Acceptance:**
 - `signtool verify /pa` passes on every PE.
 - Checksums and provenance verify following the public docs.
-- MSI install, upgrade and uninstall work in an Intune or ConfigMgr lab.
+- The self-extractor asks for a folder, runs nothing, and the extracted program runs from a standard-user account; an Intune/ConfigMgr file-copy deployment works in a lab.
 - Portable update and rollback work, and a tampered zip is rejected.
 - `UpdateCheckEnabled=0` produces no update traffic.
 
@@ -553,11 +566,11 @@ P0 Foundations ─► P1 Unbranded build ─► P2 Branding & de-Googling ─┬
 
 | ID | Decision |
 |---|---|
-| D1 | Confirm full Chromium fork (this plan) and fund build farm + rebase owner, or fall back to CEF |
+| D1 | ✅ **Decided:** full Chromium fork (ADR 0001). Still needed: funding the build farm and the rebase owner |
 | D2 | Default search engines; remote suggestions on or off |
 | D3 | Portable-mode default with no policy: allow or deny |
-| D4 | Must `portable.json`/admin defaults be signed by the organization's key in addition to ours? |
-| D5 | Project license (BSD-3 recommended) |
+| D4 | Should organizations get a re-signed build with their own `portableModeDefault`/branding, or only configure through policy? |
+| D5 | ✅ **Decided:** BSD-3-Clause (`LICENSE`) |
 | D6 | Checksum signing (Sigstore vs minisign/GPG) |
 | D7 | Release Security Owner + backup; SLA commitment |
 | D8 | Tracker-blocking engine and list licensing |
@@ -569,13 +582,32 @@ P0 Foundations ─► P1 Unbranded build ─► P2 Branding & de-Googling ─┬
 
 ---
 
-## 10. First implementation tasks
+## 10. First implementation tasks and status
 
-1. Record D1, D5, D7, D11 in `docs/adr/` (fork confirmed, license, security owner, name).
-2. Order or provision a self-hosted Windows build runner (32+ cores, 64 GB+ RAM, 500 GB SSD, VS 2022 + pinned SDK). Start code-signing cert procurement.
-3. Create the repo skeleton from §5.1: `AGENTS.md`, `README.md` (with "Build from source" for Windows, like midori's), `browserx.json` + JSON schema, `chromium_version.txt`, `.gitignore` (excluding `chromium/`).
-4. Implement `tools/bx`: `download`, `import` (copy `src/` + apply `patches/series`), `export`, `build win-x64`, `run`, with unit tests.
-5. Add `ci.yml` (lint + `bx` tests + license check) and `patches.yml`.
-6. Phase 0 exit: build an unpatched Chromium through `bx` on the runner and record time, disk and package size.
-7. First patches in `patches/branding/`: product name, user-data-dir name, policy registry path (`SOFTWARE\Policies\BrowserX`).
-8. Write `docs/policy-reference.md` stubs for the new policies, including `PortableModeAllowed` semantics from §6.3.
+Confirmed by the project owner on 2026-11-13: **D1** (full Chromium fork), **portable-only distribution** (ADR 0002), and **D5** (BSD-3-Clause, applied in `LICENSE`; it can still be changed before the first external contribution).
+
+Done in this repository (scaffold, no Chromium fetched or built):
+
+1. ✅ Repo skeleton like midori-desktop:
+   - `browserx.json` (+ `schemas/`) pins Chromium **158.0.8127.37** (Windows stable on 2026-11-13)
+   - `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE`, `.gitignore`
+   - `docs/adr/0001-chromium-fork.md`, `docs/adr/0002-portable-only.md`
+2. ✅ `bx` tool (`bx.py`, `tools/bx/`): `validate`, `doctor`, `download`, `import`, `reset`, `brand`, `build`, `run`, `package`, `export`, `patches`, `update`, `checksums`, `verify`, `license-check`. The repository-side logic is unit-tested (22 tests). The Chromium-driving commands (`download`, `build`) are untested until a Windows build machine exists.
+3. ✅ `configs/`: layered GN args (common/windows/dev) with forbidden-arg checks, branding `BRANDING` + `map.txt`, recommended managed policies. `patches/series` is empty, with the planned first patches listed.
+4. ✅ Portable launcher `launcher/` (C++17, CMake):
+   - policy check, version selection, signature check (release), Data folder, switch filter
+   - core unit tests pass on Linux, and the Windows executable cross-compiles with `-Werror`
+   - Wine smoke test passed: allowed run, HKLM deny (exit 3, nothing written), HKCU unable to override HKLM, missing files (exit 5)
+5. ✅ Packaging: `bx package` (portable folder, deterministic zip, `SHA256SUMS`), `packaging/windows/sign.ps1`, `make-sfx.ps1`, `README-PORTABLE.txt`.
+6. ✅ CI:
+   - `ci.yml` runs on GitHub-hosted runners: bx tests, launcher on Linux, and on Windows with MSVC
+   - `patches.yml`, `build-windows.yml` and `release.yml` need a self-hosted runner and are manual
+   - `update-chromium.yml` runs daily and opens a bump PR
+
+Next:
+
+1. Provision the self-hosted Windows build runner (§2.3) and start code-signing certificate procurement.
+2. Decide D7 (security owner), D11 (final name/branding), D3 (portable default), D6 (checksum signing).
+3. Phase 0 exit: `bx download && bx import && bx build win-x64` on the runner, then record time, disk and size. Confirm the GN args and `chrome.7z` staging path against 158.x.
+4. First patches: `branding/product-name.patch` (exe name `browserx.exe`), `branding/user-data-dir.patch`, `branding/policy-registry-key.patch`.
+5. Phase 4 patch `portable/portable-user-data-dir.patch` (policy re-check inside `browserx.exe`, §6.2), plus the `PortableModeAllowed` policy definition in the ADMX.

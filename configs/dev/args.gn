@@ -1,0 +1,10 @@
+# Copyright 2026 The Browser-x Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+#
+# Overrides for `bx build <target> --dev`: fast incremental developer builds.
+# Never used for releases.
+
+is_official_build = false
+is_component_build = true
+symbol_level = 0

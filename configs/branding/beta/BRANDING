@@ -1,0 +1,10 @@
+COMPANY_FULLNAME=Browser-x Project
+COMPANY_SHORTNAME=Browser-x Project
+PRODUCT_FULLNAME=Browser-x Beta
+PRODUCT_SHORTNAME=Browser-x Beta
+PRODUCT_INSTALLER_FULLNAME=Browser-x Beta
+PRODUCT_INSTALLER_SHORTNAME=Browser-x Beta
+COPYRIGHT=Copyright @LASTCHANGE_YEAR@ The Browser-x Authors. All rights reserved.
+MAC_BUNDLE_ID=org.browserx.browserx
+MAC_CREATOR_CODE=Cr24
+MAC_TEAM_ID=

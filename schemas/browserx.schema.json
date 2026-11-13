@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Browser-x product manifest",
+  "description": "Validated by tools/bx/config.py (stdlib only). Keep both in sync.",
+  "type": "object",
+  "required": ["name", "vendor", "appId", "binaryName", "displayVersion", "distribution", "upstream", "targets", "brands", "policy", "update", "license"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "vendor": { "type": "string", "minLength": 1 },
+    "appId": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "binaryName": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "displayVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "distribution": { "const": "portable" },
+    "upstream": {
+      "type": "object",
+      "required": ["product", "version", "channel"],
+      "properties": {
+        "product": { "const": "chromium" },
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "channel": { "enum": ["stable", "extended"] }
+      }
+    },
+    "targets": { "type": "array", "items": { "enum": ["win-x64", "win-arm64"] }, "minItems": 1 },
+    "brands": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["brandFullName", "brandShortName", "brandingDir"]
+      }
+    },
+    "policy": {
+      "type": "object",
+      "required": ["registryKey", "portableModeDefault"],
+      "properties": {
+        "registryKey": { "type": "string", "pattern": "^SOFTWARE\\\\Policies\\\\" },
+        "portableModeDefault": { "enum": ["allow", "deny"] }
+      }
+    },
+    "update": {
+      "type": "object",
+      "properties": { "manifestUrl": { "type": ["string", "null"], "pattern": "^https://" } }
+    },
+    "license": { "type": "string" }
+  }
+}

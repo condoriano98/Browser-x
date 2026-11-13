@@ -1,0 +1,22 @@
+# Verifies the patch series applies to the pinned Chromium tag.
+# Needs a self-hosted Windows runner with a cached Chromium checkout
+# (labels: self-hosted, windows, chromium). Manual until that runner exists;
+# then add `pull_request: paths: [patches/**, browserx.json]`.
+name: Patches
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, windows, chromium]
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: python bx.py doctor
+      - run: python bx.py download
+      - run: python bx.py reset
+      - run: python bx.py patches

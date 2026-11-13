@@ -1,0 +1,43 @@
+# Opens a PR when Chromium publishes a new stable release (like midori's
+# update-firefox.yml). The PR must pass patches.yml and build-windows.yml.
+name: Update Chromium
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: bump
+        run: |
+          python bx.py update
+          if git diff --quiet; then echo "changed=false" >> "$GITHUB_OUTPUT"; else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "version=$(python -c "import json;print(json.load(open('browserx.json'))['upstream']['version'])")" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          branch="chromium-$VERSION"
+          if git ls-remote --exit-code origin "refs/heads/$branch" >/dev/null; then
+            echo "branch $branch already exists"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "Update Chromium to $VERSION"
+          git push origin "$branch"
+          gh pr create --title "Update Chromium to $VERSION" \
+            --body "Automated bump. Security SLA applies (docs/browser-implementation-plan.md §7.1). Run the Patches and Build Windows workflows before merging."

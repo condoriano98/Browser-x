@@ -1,0 +1,14 @@
+{
+  "_comment": "Recommended Chromium policy values for IT to deploy with the Browser-x ADMX (HKLM\\SOFTWARE\\Policies\\BrowserX). Defaults only: IT decides. See docs/policy-reference.md.",
+  "MetricsReportingEnabled": false,
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "SearchSuggestEnabled": false,
+  "BlockThirdPartyCookies": true,
+  "HttpsOnlyMode": "allowed",
+  "DefaultNotificationsSetting": 3,
+  "RemoteDebuggingAllowed": false,
+  "ExtensionInstallBlocklist": ["*"],
+  "ExtensionInstallAllowlist": [],
+  "PortableModeAllowed": true
+}

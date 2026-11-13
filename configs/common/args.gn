@@ -1,0 +1,27 @@
+# Copyright 2026 The Browser-x Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+#
+# Shared GN args for every Browser-x build (equivalent of midori's
+# configs/common/mozconfig). Verify each arg against the pinned Chromium
+# tag in Phase 0; GN fails loudly on unknown args.
+
+is_official_build = true
+is_debug = false
+is_component_build = false
+chrome_pgo_phase = 0
+symbol_level = 1
+blink_symbol_level = 0
+
+# No Google service keys: no sync, translate, Safe Browsing API, etc.
+use_official_google_api_keys = false
+google_api_key = ""
+google_default_client_id = ""
+google_default_client_secret = ""
+
+# Licensing decision D9 is open: no proprietary codecs, no Widevine.
+proprietary_codecs = false
+ffmpeg_branding = "Chromium"
+enable_widevine = false
+
+enable_hangout_services_extension = false

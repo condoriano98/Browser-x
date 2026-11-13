@@ -1,0 +1,62 @@
+# Signed release of the portable program. Runs only in the protected
+# `release` environment (required reviewers, signing cert on the runner/HSM).
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: [self-hosted, windows, chromium, signing]
+    environment: release
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v4
+      - run: python bx.py validate
+      - run: python bx.py download
+      - run: python bx.py import --reset
+      - run: python bx.py build win-x64
+      - name: Build launcher (signature-enforcing)
+        run: |
+          cmake -S launcher -B build-launcher -A x64 -DBX_REQUIRE_SIGNED=ON
+          cmake --build build-launcher --config Release
+          ctest --test-dir build-launcher -C Release --output-on-failure
+      - name: Stage and sign application files
+        shell: pwsh
+        run: |
+          & chromium/src/third_party/lzma_sdk/bin/win64/7za.exe x chromium/src/out/Release-x64/chrome.7z -ostaging -y
+          ./packaging/windows/sign.ps1 -Path staging/Chrome-bin, build-launcher/Release/BrowserX.exe -CertThumbprint $env:BX_SIGNING_THUMBPRINT
+        env:
+          BX_SIGNING_THUMBPRINT: ${{ vars.BX_SIGNING_THUMBPRINT }}
+      - run: python bx.py package win-x64 --staging staging/Chrome-bin --launcher build-launcher/Release/BrowserX.exe --notices chromium/src/out/Release-x64/gen/components/resources/about_credits.html
+      - name: Self-extracting download, sign, checksums
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem dist/*-portable.zip | Select-Object -First 1
+          ./packaging/windows/make-sfx.ps1 -Zip $zip.FullName -SevenZip $env:BX_7Z -SfxModule $env:BX_7Z_SFX
+          $exe = [IO.Path]::ChangeExtension($zip.FullName, '.exe')
+          ./packaging/windows/sign.ps1 -Path $exe -CertThumbprint $env:BX_SIGNING_THUMBPRINT
+          python bx.py checksums $zip.FullName $exe
+        env:
+          BX_SIGNING_THUMBPRINT: ${{ vars.BX_SIGNING_THUMBPRINT }}
+          BX_7Z: ${{ vars.BX_7Z }}
+          BX_7Z_SFX: ${{ vars.BX_7Z_SFX }}
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.zip
+            dist/*.exe
+      # Signing SHA256SUMS (decision D6) and publishing the GitHub release are
+      # added once D6 is decided; artifacts are uploaded for review until then.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BrowserX-portable-release
+          path: |
+            dist/*.zip
+            dist/*.exe
+            dist/SHA256SUMS

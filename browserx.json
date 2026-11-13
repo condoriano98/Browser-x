@@ -1,0 +1,37 @@
+{
+  "$schema": "./schemas/browserx.schema.json",
+  "name": "Browser-x",
+  "vendor": "Browser-x Project",
+  "appId": "browserx",
+  "binaryName": "browserx",
+  "displayVersion": "0.1.0",
+  "distribution": "portable",
+  "upstream": {
+    "product": "chromium",
+    "version": "158.0.8127.37",
+    "channel": "stable"
+  },
+  "targets": [
+    "win-x64"
+  ],
+  "brands": {
+    "stable": {
+      "brandFullName": "Browser-x",
+      "brandShortName": "Browser-x",
+      "brandingDir": "configs/branding/stable"
+    },
+    "beta": {
+      "brandFullName": "Browser-x Beta",
+      "brandShortName": "Browser-x Beta",
+      "brandingDir": "configs/branding/beta"
+    }
+  },
+  "policy": {
+    "registryKey": "SOFTWARE\\Policies\\BrowserX",
+    "portableModeDefault": "allow"
+  },
+  "update": {
+    "manifestUrl": null
+  },
+  "license": "BSD-3-Clause"
+}

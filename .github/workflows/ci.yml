@@ -1,0 +1,44 @@
+# Runs on GitHub-hosted runners: everything that does not need a Chromium checkout.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  bx:
+    name: bx tool, manifest and license checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python bx.py validate
+      - run: python bx.py license-check
+      - run: python -m unittest discover -s tests -t . -v
+
+  launcher-linux:
+    name: launcher core tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S launcher -B build-launcher -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build-launcher
+      - run: ctest --test-dir build-launcher --output-on-failure
+
+  launcher-windows:
+    name: BrowserX.exe launcher (Windows, MSVC)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S launcher -B build-launcher -A x64
+      - run: cmake --build build-launcher --config Release
+      - run: ctest --test-dir build-launcher -C Release --output-on-failure
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BrowserX-launcher-unsigned
+          path: build-launcher/Release/BrowserX.exe

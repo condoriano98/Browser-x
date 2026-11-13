@@ -1,0 +1,44 @@
+# Full Chromium build of Browser-x and an unsigned portable package.
+# Requires the self-hosted build machine described in docs/building-windows.md.
+name: Build Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      dev:
+        description: "Fast developer build (component, non-official)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: [self-hosted, windows, chromium]
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v4
+      - run: python bx.py doctor
+      - run: python bx.py download
+      - run: python bx.py import --reset
+      - name: Build Chromium
+        run: python bx.py build win-x64 ${{ inputs.dev && '--dev' || '' }}
+      - name: Build launcher
+        run: |
+          cmake -S launcher -B build-launcher -A x64
+          cmake --build build-launcher --config Release
+          ctest --test-dir build-launcher -C Release --output-on-failure
+      - name: Stage application files
+        shell: pwsh
+        run: |
+          $out = "chromium/src/out/Release-x64"
+          & chromium/src/third_party/lzma_sdk/bin/win64/7za.exe x "$out/chrome.7z" -ostaging -y
+      - name: Package (unsigned)
+        run: python bx.py package win-x64 --staging staging/Chrome-bin --launcher build-launcher/Release/BrowserX.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BrowserX-portable-unsigned
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS

@@ -1,0 +1,9 @@
+# Browser-x Chromium patch series, applied in order by `bx import`.
+# One topic per patch; keep upstream edits as small hooks and put new code
+# in src/browserx/. Planned first patches (docs/browser-implementation-plan.md §10):
+#   branding/product-name.patch
+#   branding/user-data-dir.patch
+#   branding/policy-registry-key.patch
+#   portable/portable-user-data-dir.patch
+#   policy/portable-mode-allowed.patch
+#   privacy/disable-metrics-and-variations.patch

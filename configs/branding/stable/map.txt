@@ -1,0 +1,6 @@
+# Branding files copied into chromium/src by `bx brand` / `bx import`.
+# Format: <file in this directory> => <path inside chromium/src>
+# Icons (product_logo_*.png, chromium.ico, VisualElements) are added here
+# once the product artwork exists (decision D11). Never use Midori, Astian,
+# Google or Chrome artwork.
+BRANDING => chrome/app/theme/chromium/BRANDING
