@@ -8,7 +8,7 @@
   "distribution": "portable",
   "upstream": {
     "product": "chromium",
-    "version": "158.0.8127.37",
+    "version": "159.0.8154.34",
     "channel": "stable"
   },
   "targets": [
